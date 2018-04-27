@@ -1,0 +1,424 @@
+---
+title: "Herders - Functions for the Weather Data Analysis"
+author: "Christian Knoth, Henning Teickner"
+date: "26 Februar 2018"
+output: 
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<script type="text/javascript">
+  // When the document is fully rendered...
+  $(document).ready(function() {
+    // ...select all header elements...
+    $('h1, h2, h3, h4, h5').each(function() {
+      // ...and add an id to them corresponding to their 'titles'
+      $(this).attr('id', $(this).html());
+    });
+  });
+</script>
+
+<style>
+body {
+text-align: justify}
+</style>
+
+## Data Preparation
+
+Definition of the workspace
+```{r workspace_definition, eval = T, message = F, warning = F}
+# define directory to obtain data from
+directory.data = "C:/Herders/weather_data_analysis/"
+```
+
+Load required packages
+```{r load_packages, eval = T, message = F, warning = F}
+# load packages
+if(!require("raster")){
+  install.packages("raster")
+  library(raster)
+}
+if(!require("ncdf4")){
+  install.packages("ncdf4")
+  library(ncdf4)
+}
+if(!require("spacetime")){
+  install.packages("spacetime")
+  library(spacetime)
+}
+if(!require("mapview")){
+  install.packages("mapview")
+  library(mapview)
+}
+if(!require("rgdal")){
+  install.packages("rgdal")
+  library(rgdal)
+}
+if(!require("ggplot2")){
+  install.packages("ggplot2")
+  library(ggplot2)
+}
+if(!require("RColorBrewer")){
+  install.packages("RColorBrewer")
+  library(RColorBrewer)
+}
+```
+
+<!--Import required data:
+
+1. snow_dense: Daily modeled snow density values [kg m<sup>-3</sup>] for `r snow_dense <- stack(paste(directory.data, "data/2015_2016_weatherdata_00125/weatherdata_15_16.nc", sep=""), varname = "rsn"); range(as.Date(snow_dense@z[[1]]))[1]` to `r snow_dense <- stack(paste(directory.data, "data/2015_2016_weatherdata_00125/weatherdata_15_16.nc", sep=""), varname = "rsn"); range(as.Date(snow_dense@z[[1]]))[2]` at a spatial resolution of `r res(snow_dense)[1]` degrees.
+2. snow_depth: Daily modeled snow density values [kg m<sup>-3</sup>] for `r snow_depth <- stack(paste(directory.data, "data/2015_2016_weatherdata_00125/weatherdata_15_16.nc", sep=""), varname = "sd"); range(as.Date(snow_depth@z[[1]]))[1]` to `r range(as.Date(snow_depth@z[[1]]))[2]` at a spatial resolution of `r res(snow_depth)[1]` degrees.
+3. skin_temp: Daily modeled skin temperature [K] for `r skin_temp <- stack(paste(directory.data, "data/2015_2016_weatherdata_00125/weatherdata_15_16.nc", sep=""), varname = "skt"); range(as.Date(skin_temp@z[[1]]))[1]` to `r range(as.Date(skin_temp@z[[1]]))[2]` at a spatial resolution of `r res(skin_temp)[1]` degrees.
+4. temp_2m: modeled daily mean air temperature [K] for `r load(paste(directory.data, "data/daily_means.RData", sep="")); temp_2m = daily_means; remove(daily_means); range(as.Date(temp_2m@z[[1]]))[1]` to `r range(as.Date(temp_2m@z[[1]]))[2]` at a spatial resolution of `r res(temp_2m)[1]` degrees. 
+```{r import_data, eval = F, message = F, warning = F} 
+# Data Import
+snow_dense <- stack(paste(directory.data, "data/2015_2016_weatherdata_00125/weatherdata_15_16.nc", sep=""), varname = "rsn")
+snow_depth = stack(paste(directory.data, "data/2015_2016_weatherdata_00125/weatherdata_15_16.nc", sep=""), varname = "sd")
+skin_temp = stack(paste(directory.data, "data/2015_2016_weatherdata_00125/weatherdata_15_16.nc", sep=""), varname = "skt")
+load(paste(directory.data, "data/daily_means.RData", sep="")) # temp_2m is now computed on gis-bigdata (to get daily means) and is therefore just loaded
+temp_2m = daily_means
+remove(daily_means)
+```
+-->
+
+## monthIndices
+
+Function to get all band indices of days in a month for a certain dataset. If year is provided, only returns indices of the month of that year.
+
+* Arguments:
+    + `variable`: RasterStack object
+    + `month`: target month (integer)
+    + `year`: target year (integer) or `NA` (for all years of `variable`)
+
+```{r monthIndices, eval = T}
+monthIndices <- function(variable, month, year = NA){
+  
+  if(is.na(year) == FALSE){
+    
+    which(as.numeric(format(as.Date(variable@z[[1]]), "%m")) == month & 
+          as.numeric(format(as.Date(variable@z[[1]]), "%y")) == year)
+    
+  }else{
+    
+    which(as.numeric(format(as.Date(variable@z[[1]]), "%m")) == month)
+    
+  }
+  
+}
+```
+
+## tenDayStack
+
+Function in order to get a raster stacks for one of the three 10 day intervals of a specified month in a specified year.
+
+* For the 3rd interval, this version returns 8 to 11 days, depending on the selected month.
+
+* The function uses <a href="#monthIndices">monthIndices</a> of the variable and month to get the band indices of that month.
+
+* If the year is not specified, this will return results for the first year of the provided data set.
+
+* Arguments:
+    + `variable`: RasterStack object
+    + `month`: target month (integer)
+    + `interval`: index of the 10 day interval of the corresponding month (1, 2 or 3)
+    + `year`: target year (integer) or `NA` (first year of `variable`)
+
+```{r tenDayStack, eval = T}
+tenDayStack <- function(variable, month, interval, year = NA){
+  
+  if(interval == 1){
+    
+    return(stack(x = variable[[monthIndices(variable, month, year)[c(1:10)]]]))
+    
+  } else if(interval == 2){
+    
+    return(stack(x = variable[[monthIndices(variable, month, year)[c(11:20)]]]))
+    
+  }else if(interval == 3){
+    
+    if(is.na(year) == T){ # if no year is provided, the year of the first occurence of given month in the data set needs to be computed and used to define number of days in third interval
+      year2 <- as.numeric(format(as.Date(variable[[monthIndices(variable, month)[1], drop = F]]@z[[1]]), "%y"))
+      
+    }else{ 
+      
+      year2 <- year
+      
+    }
+    
+    return(stack(x = variable[[monthIndices(variable, month, year)[c(21:length(monthIndices(variable, month, year2)))]]]))
+    
+  }else{
+    
+    print("invalid interval")
+    
+  }
+  
+}
+
+## maybe the code could be more straightforward if the argument year = NA has the same meaning for both functions (monthIndices and tenDayStack) instead of two different meanings?
+
+## I simplified the function by replacing the for loops by the function stack().
+```
+```{r tenDayStack_original, eval = F}
+# original version:
+
+tenDayStack <- function(variable, month, interval, year=NA){
+
+  days <- c()
+  if(interval == 1){
+    for (j in 1:10){
+      days <- c(days,variable[[monthIndices(variable, month, year)[j]]])
+    }
+    return(stack(days))
+  }
+  
+  else if(interval == 2){
+    for (j in 11:20){
+      days <- c(days,variable[[monthIndices(variable, month, year)[j]]])
+    }
+    return(stack(days))
+  }
+  
+  else if(interval == 3){
+    if(is.na(year)==FALSE){
+      for (j in 21:length(monthIndices(variable, month, year))){
+        days <- c(days,variable[[monthIndices(variable, month, year)[j]]])
+      }
+    }
+    else{ # if no year is provided, the year of the first occurence of given month in the data set needs to be computed and used to define number of days in third interval
+      year2 <- as.numeric(format(as.Date(variable[[monthIndices(variable,month)[1],drop=F]]@z[[1]]), "%y"))
+      for (j in 21:length(monthIndices(variable, month, year2))){
+        days <- c(days,variable[[monthIndices(variable, month, year2)[j]]])
+      }
+    }
+    return(stack(days))
+  }
+  
+  else{
+    print("invalid interval")
+  }
+}
+
+```
+
+## tenDayMean
+
+Function in order to get the mean of the 1st, 2nd, or 3rd 10 day interval of the specified variable and month.
+
+* The function uses <a href="#tenDayStack">tenDayStack</a> to create a raster stack of the 1st 2nd or 3rd ten of these indices and then computes the mean of that stack.
+
+* if `year` is not provided, the first year in the provided dataset will be used by the nested function tenDayDayStack.
+
+* if `layers` is TRUE, the single layers of the corresponding interval are returned, all with the mean value for the interval (to facilitate comparison with daywise data).
+
+* Arguments:
+    + `variable`: RasterStack object
+    + `month`: target month (integer)
+    + `interval`: index of the 10 day interval of the corresponding month (1, 2 or 3)
+    + `year`: target year (integer) or `NA` (first year of `variable`)
+    + `layers`: should the mean values be exportet as one raster (`layers = F`) or replicated as raster stack of the length of the 10 days interval (`layers = T`)?
+
+```{r tenDayMean, eval = T}
+tenDayMean <- function(variable, month, interval, year = NA, layers = FALSE){
+  
+  tendays <- tenDayStack(variable, month, interval, year)
+  tendaymean <- mean(tendays)
+  
+  if (layers == FALSE){
+    
+   return(tendaymean)
+    
+  }else{
+    
+    for (i in 1:nlayers(tendays)){
+      tendays[[i]] <- tendaymean
+    }
+    
+   return(tendays)
+    
+  }
+   
+}
+```
+
+## timeZoneConvert
+
+Function that converts the time zone of the dates of a netcdf file downloaded from ERA INTERIM (time zone: UTC) to any other time zone (default: "Asia/Ulan_Bator").
+
+* Arguments:
+    + `variable`: RasterStack object as downloaded from ERA INTERIM.
+    + `timezone`: character giving the target time zone, as defined in `OlsonNames()`.
+
+```{r timeZoneConvert, eval = T}
+# function to convert time data from UTC to any target time zone for netcdf data of ERA INTERIM
+timeZoneConvert <- function(variable, timezone = "Asia/Ulan_Bator"){
+  
+  # load packages
+  library(raster)
+  library(parallel)
+  library(doParallel)
+  
+  variable@z[[1]] <- as.character(format(as.POSIXct(variable@z[[1]], tz = "UTC"), tz = timezone, usetz = F))
+  
+  for(layer_i in c(1:nlayers(variable))){
+    variable[[layer_i]]@data@names <- variable@z[[1]][layer_i]
+  }
+  
+  return(variable)
+  
+}
+```
+
+## dailyExtreme
+Function that computes a RasterStack containing the daily minimum values of a variable with several rasters per day. The function supports netcdf files downloaded from ERA INTERIM and implements the [instruction](https://software.ecmwf.int/wiki/display/CKB/How+to+get+daily+temperature+max%2C+min+and+mean+from+ERA-Interim) for calculating daily minimum and maximum temperatures from the data provided by ERA INTERIM.
+
+* Arguments:
+    + `variable`: RasterStack object as downloaded from ERA INTERIM.
+    + `min`: a logical value indicating whether the daily minima should be calculated (`min = T`) or the daily maxima (`min = F`).
+    + `cores`: an integer indicating the number of cores to be used in parallel computing. The default is `cores = 1`.
+
+```{r dailyExtreme, eval = T}
+dailyExtreme <- function(variable, min = T, cores = 1){
+  
+  # load packages
+  library(raster)
+  library(parallel)
+  library(doParallel)
+  
+  # set up cluster
+  cl <- makeCluster(cores, outfile="", type = "PSOCK")
+  registerDoParallel(cl)
+  # clusterEvalQ(cl, .libPaths()) # side effects and functionality have to be checked
+  clusterCall(cl, function(){.libPaths(new = c(.libPaths(), "/home/christian/R/packages/"))
+    .libPaths(new = c(.libPaths(), "/home/h_teic01/R/packages/"))
+    .libPaths()})
+  
+  # get days of variable
+  days <- unique(strftime(as.POSIXct(variable@z[[1]]), "%Y-%m-%d"))
+  
+  # get raster stack with daily extreme values
+  extreme.stack <- 
+    foreach(day_i = c(1:length(unique(strftime(as.POSIXct(variable@z[[1]]), "%Y-%m-%d")))), .combine = stack, .packages = "raster") %dopar% {
+    
+    if(min == T){
+      
+      # get raster with minima for the current day
+      r.ext <- min(variable[[which(strftime(as.POSIXct(variable@z[[1]]), "%Y-%m-%d") == days[day_i])]])
+      
+    }else if(min == F){
+      
+      # get raster with minima for the current day
+      r.ext <- max(variable[[which(strftime(as.POSIXct(variable@z[[1]]), "%Y-%m-%d") == days[day_i])]])
+      
+    }
+    
+      r.ext@data@names <- days[day_i]
+      return(r.ext)
+      
+  }
+  
+  # define z slot of the extreme.stack
+  extreme.stack@z[[1]] <- days
+  
+  # stop cluster
+  stopCluster(cl)
+  
+  return(extreme.stack)
+  
+}
+```
+
+## IntervalMean
+
+Function in order to calculate the mean value for (a specific 10 day interval of) a specific month for a specific year interval.
+
+* Arguments:
+    + `variable`: RasterStack object as downloaded from ERA INTERIM.
+    + `month`: target month (integer). If `month = NA`, the mean values are computed for each month.
+    + `interval`: index of the 10 day interval of the corresponding month (1, 2 or 3). If `interval = NA`, the mean values are computed for each interval of the corresponding month.
+    + `year`: target year range (integer of form `c(start, end)`). If `year = NA`, the mean values are computed for the maximum possible time interval.
+   
+* Value:
+    + `RasterLayer` object with the corresponding mean values if `month != NA` and `interval != NA`.
+    + `RasterStack` objet with the corresponding mean values for each interval of a specified month if `month != NA` and `interval == NA` or the corresponding mean values for each month for a specified interval if `month == NA` and `interval != NA` or the corresponding mean values for each month and each interval if `month == NA` and `interval == NA`. The slot `z` of the `RasterStack` object is in each case of the form `paste0(month, "_", interval)`, e.g. `1_1` for the first ten day interval of January.
+
+```{r , eval = F}
+IntervalMean <- function(variable,
+                         month = NA,
+                         interval = NA,
+                         year = NA
+){
+  
+  # if year == NA: compute mean for the whole time interval of variable
+  if(is.na(year)){
+    year <- as.numeric(format(as.Date(variable@z[[1]]), "%Y"))[c(1, length(variable@z[[1]]))]
+  }
+  
+  # define month range
+  month.range <- as.numeric(format(as.Date(variable@z[[1]]), "%m"))[c(1, length(variable@z[[1]]))]
+  
+  # define vector with individual years
+  years <- seq(year[1], year[2])
+  
+  if(is.na(month) == T){
+    # define range of months
+    months <- c(1:12)
+  }else{
+    months <- month
+  }
+   
+  if(is.na(interval) == T){
+    # define range of intervals
+    intervals <- c(1:3)
+  }else{
+    intervals <- interval
+  } 
+    
+  # define raster stack to store values in
+  stack.month <- stack()
+  
+  for(month_i in months){
+      
+    # define raster stack to store values in
+    stack.interval <- stack()
+    
+    for(interval_i in intervals){
+      
+      # define raster stack to store values in
+      tendstack <- stack()
+      
+      for(year_i in c(1:length(years))){
+        
+       if((year_i == 1 & month_i < month.range[1])| (year_i == length(years) & month_i > month.range[2])){
+         next 
+       } 
+        
+tendstack <- stack(tendstack, tenDayMean(variable = variable, month = month_i, interval = interval_i, year = as.numeric(substr(as.character(years[year_i]), 3, 4)), layers = F))
+      }
+      
+      # calculate mean of tendstack
+      mean.tendstack <- mean(tendstack)
+      
+      # stack tendstack for each interval
+      stack.interval <- stack(stack.interval, mean.tendstack)
+      
+    }
+    
+    # stack stack.interval for each month
+    stack.month <- stack(stack.month, stack.interval)
+    
+  }
+  
+  # define slot z of stack.month
+  stack.month@z[[1]] <- paste0(sapply(months, function(x){rep(x, length(intervals))}), "_",  rep(intervals, length(months)))
+  
+  return(stack.month)
+  
+}
+```
+
+<br><br>
