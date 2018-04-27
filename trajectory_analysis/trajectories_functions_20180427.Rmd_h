@@ -1,0 +1,885 @@
+---
+title: "Herders - Functions for the Trajectories Data Analysis"
+author: "Christian Knoth, Henning Teickner"
+date: "27 April 2018"
+output: 
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+<style>
+body {
+text-align: justify}
+</style>
+
+# Introduction
+
+Definition of the workspace
+```{r workspace_definition, eval = T, message = F, warning = F}
+# define directory to obtain data from
+directory.data = "C:/Herders/trajectories/"
+```
+
+Load required packages
+```{r load_packages, eval = T, message = F, warning = F}
+# load packages
+require(sp)
+require(spacetime)
+require(trajectories)
+library(rgl)
+library(rglwidget)
+library(mapview)
+library(xts)
+library(lubridate)
+
+```
+
+# Functions
+
+## readTrack
+
+Function in order to import an individual GPS track file.
+
+* Arguments:
+    + `fname`: file name of the correpsonding GPS track file.
+
+* Value:
+    + An object of class `Track`.
+
+```{r readTrack, eval = T, message = F, warning = F}
+readTrack = function(fname) {
+  dt2POSIX = function(dt, tm) {
+    stopifnot(is.numeric(dt) && is.numeric(tm))
+    as.POSIXct(paste0(
+      2000 + dt %/% 10000, "-",
+      (dt %/% 100) %% 100, "-",
+      dt %% 100, " ",
+      tm %/% 10000, ":",
+      tm %/% 100 %% 100, ":",
+      tm %% 100), tz ="GMT")
+  }
+  print(paste("reading file", fname))
+  x = read.csv(fname, skipNul = TRUE) # most files contain embedded nuls
+  x = x[!is.na(x$DATE),]
+  x$lat = as.numeric(sub("N", "", x$LATITUDE.N.S))
+  x$lon = x$LONGITUDE.E.W
+  tm = dt2POSIX(x$DATE, x$TIME)
+  pts = SpatialPoints(cbind(x$lon, x$lat), CRS("+proj=longlat +ellps=WGS84"))
+  st = STIDF(pts, tm, x)
+  Track(st)
+}
+```
+
+## removeEmptyFiles
+
+Function in order to remove empty csv tables.
+
+* Arguments:
+    + `listname`: a list of file names of the correpsonding GPS track files that should be chekced.
+
+```{r removeEmptyFiles, eval = T, message = F, warning = F}
+removeEmptyFiles = function(listname){
+  remove = character()
+  checkFile = function(fname){
+    if (file.size(fname) == 0){
+      append(remove,fname)
+    } else{
+      append(remove,NA)
+    }
+    
+  }
+  remove = lapply(listname,checkFile)
+  remove = remove[!is.na(remove)]
+  print("Ignoring empty files:", quote=F)
+  print(paste(remove), print.na = "", quote=F)
+  listname[! listname %in% remove]
+}
+```
+
+## removeEmptyFolders
+
+Function in order to remove empty folders.
+
+* Arguments:
+    + `listname`: a list of folder names that should be checked.
+
+```{r removeEmptyFolders, eval = T, message = F, warning = F}
+removeEmptyFolders = function(dirlist){
+  remove = character()
+  checkDir = function(dirname){
+    if (length(list.files(dirname, pattern="*.CSV", full.names = T)) == 0){
+      append(remove,dirname)
+    } else{
+      append(remove,NA)
+    }
+    
+  }
+  remove = lapply(dirlist,checkDir)
+  remove = remove[!is.na(remove)]
+  print("Ignoring empty folders:", quote=F)
+  print(paste(remove), print.na = "", quote=F)
+  dirlist[! dirlist %in% remove]
+}
+```
+
+## loadTracks
+
+Function in order to load all GPS track data within a specified directory. The function also removes empty csv tables within the folders by calling the function `removeEmptyFiles`.
+
+* Arguments:
+    + `folder`: path to a folder with csv data.
+
+* Value:
+    + An object of class `Tracks`.
+
+```{r loadTracks, eval = T, message = F, warning = F}
+loadTracks = function(folder) {
+  print(paste("Loading tracks from folder", folder, sep = " "),quote = F)
+  lst = list.files(folder, pattern = "*.CSV", full.names = T)
+  lst = removeEmptyFiles(lst)
+  Tracks(lapply(lst, readTrack))
+}
+```
+
+## timeActiveTrack
+
+Function in order to compute the time [s] during which position data was collected in a given `Track` object (for an individual `Track` object) within a given time frame.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `tstart`: a POSIXct object indicating the date and time of the start of the target period.
+    + `tend`: a POSIXct object indicating the date and time of the end of the target period.
+    
+* Value:
+    + 0: If the `Track` object does not cover any value of the target period.
+    + 1: If the maximum time value of the `Track` object equals the start value of the target period or if the minimum time value of the `Track` object equals the end value of the target period.
+    + numeric: The number of seconds between the first entry of the `Track` object within the time period and the last entry of the `Track` object within the time period.
+
+```{r timeActiveTrack, eval = T, message = F, warning = F}
+timeActiveTrack <- function(currenttrack, tstart, tend) {
+  if (max(index(currenttrack@time)) < tstart |
+      min(index(currenttrack@time)) > tend) {
+    #if currenttrack is completely outside the given timeframe return 0
+    0
+  }
+  else if (max(index(currenttrack@time)) == tstart |
+           min(index(currenttrack@time)) == tend) {
+    #if currenttrack touches the time frame (e.g. last fix of track equals start of time frame) return 1
+    # to show there is a fix in the given time frame
+    1
+  }
+  else{
+    as.double(difftime(max(index(
+      currenttrack@time
+    )[index(currenttrack@time) <= tend]),
+    min(index(
+      currenttrack@time
+    )[index(currenttrack@time) >= tstart]), units =
+      "sec"))
+  }
+}
+```
+
+## timeActiveTracks
+
+Function in order to compute the time [s] during which position data was collected in a given `Track` object (for all `Track` objects within this `Tracks` object) within a given time frame by means of the function `timeActiveTrack` (yields the total time during which the logger of a given household was active).
+
+* Arguments:
+    + `currenttracks`: A `Tracks` object.
+    + `tstart`: a POSIXct object indicating the date and time of the start of the target period.
+    + `tend`: a POSIXct object indicating the date and time of the end of the target period.
+    
+* Value:
+    + numeric: The sum of the number of seconds between the first entry of a `Track` object within the time period and the last entry of the same `Track` object within the time period for all `Track` objects within the `Tracks` object.
+
+```{r timeActiveTracks, eval = T, message = F, warning = F}
+timeActiveTracks <- function(currenttracks, tstart, tend){
+  sum(unlist(
+    lapply(
+      currenttracks@tracks,
+      timeActiveTrack,
+      tstart = tstart,
+      tend = tend
+    )
+  ))
+}
+```
+
+## timeActiveTracksCollection
+
+Function in order to compute the time [s] during which position data was collected in a given `Track` object (for all `Track` objects within this `Tracks` object) within a given time frame by means of the function `timeActiveTrack` (yields the total time during which the logger of a given household was active).
+
+* Arguments:
+    + `trcollection`: A `TracksCollection` object.
+    + `timeframe`: A list with the following entries:
+        + `tstart`: a POSIXct object indicating the date and time of the start of the target period.
+        + `tend`: a POSIXct object indicating the date and time of the end of the target period.
+    
+* Value:
+    + numeric: The proportion of the sum of the number of seconds between the first entry of a `Track` object within the time period and the last entry of the same `Track` object within the time period for all `Track` objects within the `TrackCollection` object relative to the number of seconds of the target period.
+
+```{r timeActiveTracksCollection, eval = T, message = F, warning = F}
+timeActiveTracksCollection <- function(timeframe, trcollection) {
+  tstart = timeframe$tstart
+  tend = timeframe$tend
+  trcollection@tracksCollectionData$tactive = unlist(
+    lapply(
+      trcollection@tracksCollection,
+      timeActiveTracks,
+      tstart = tstart,
+      tend = tend
+    )
+  )
+  
+  pctactive = trcollection@tracksCollectionData$tactive /
+    as.integer(difftime(tend, tstart, units = "sec")) * 100
+  
+  return(pctactive)
+}
+```
+
+## findGaps
+
+Function in order to find gaps in a `Track` object based on the duration between measurements. The function takes the track and a tolrance or a threshold value as input. Additionally, the time period within gaps should be searched can be provided.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
+    + `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
+    + `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
+    + `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+    
+* Value:
+    + data.frame: A data.frame in the form of the connections slot of a `Track` object containing gaps between data points as entries.
+
+```{r findGaps, eval = T, message = F, warning = F}
+findGaps <- function(currenttrack, tstart = min(index(currenttrack@time)), tend = max(index(currenttrack@time)), threshold = 18000, tolerance = 2) {
+    if (is.null(threshold) == TRUE) {
+      
+      gap_thresh <- 
+        (mean(currenttrack@connections$duration) + tolerance * sd(currenttrack@connections$duration))
+      
+      connectionsub <-
+        currenttrack@connections[index(currenttrack@time) >= tstart &
+                                   index(currenttrack@time) <= tend,]
+      na.omit(connectionsub[connectionsub$duration > gap_thresh,])
+    }
+    else{
+      connectionsub <-
+        currenttrack@connections[index(currenttrack@time) >= tstart &
+                                   index(currenttrack@time) <= tend,]
+      na.omit(connectionsub[connectionsub$duration > threshold,])
+    }
+    
+  }
+```
+
+## countGaps
+
+Function in order to count the number of gaps in a `Track` object using the function `findGaps`.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
+    + `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
+    + `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
+    + `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+    
+* Value:
+    + numeric: The number of gaps within the `Track` object.
+
+```{r countGaps, eval = T, message = F, warning = F}
+countGaps <- function(currenttrack, tstart = min(index(currenttrack@time)) , tend = max(index(currenttrack@time)), threshold = 18000, tolerance = 2) {
+  length(
+    findGaps(
+      currenttrack, tstart = tstart, tend = tend, threshold = threshold, tolerance = tolerance
+    )[,1]
+  )
+}
+```
+
+## gapDuration
+
+Function in order to calculate the total duration of gaps [s] in a `Track` object using the function `findGaps`.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
+    + `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
+    + `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
+    + `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+    
+* Value:
+    + numeric: The sum of the duration of gaps within the `Track` object [s].
+
+```{r gapDuration, eval = T, message = F, warning = F}
+gapDuration <- function(currenttrack, tstart = min(index(currenttrack@time)) , tend = max(index(currenttrack@time)), threshold = 18000, tolerance = 2) {
+  gaps <-
+    findGaps(
+      currenttrack, tstart = tstart, tend = tend, threshold = threshold, tolerance = tolerance
+    )
+  sum(gaps$duration)
+}
+```
+
+## gapProportion
+
+Function in order to calculate the proportion of the duration of gaps in a `Track` object relative to the duration of the total `Track` object (and within a specified time period) using the function `gapDuration`.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
+    + `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
+    + `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
+    + `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+    
+* Value:
+    + numeric: The proportion of the duration of gaps in a `Track` object relative to the duration of the total `Track` object (or a specified time period).
+
+```{r gapProportion, eval = T, message = F, warning = F}
+gapProportion <- function(currenttrack, tstart = min(index(currenttrack@time)) , tend = max(index(currenttrack@time)), threshold = 18000, tolerance = 2) {
+  gapDuration(
+    currenttrack,tstart = tstart, tend = tend, threshold = threshold, tolerance = tolerance
+  ) / timeActiveTrack(currenttrack, tstart = tstart, tend = tend)
+  
+}
+```
+
+## totalGapDuration
+
+Function in order to calculate the total duration of gaps [s] for all `Track` objects within a specified `Tracks` object (and for a specified time period).
+
+* Arguments:
+    + `currenttracks`: A `Tracks` object.
+    + `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
+    + `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
+    + `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
+    + `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+    
+* Value:
+    + numeric: The sum of the duration of gaps for all `Track` objects within the specified `Tracks` object (and within the specified time period) [s].
+
+```{r totalGapDuration, eval = T, message = F, warning = F}
+totalGapDuration <- function(currenttracks, tstart = min(currenttracks@tracksData$tmin), tend = max(currenttracks@tracksData$tmax), threshold = 18000, tolerance = 2) {
+  sum(unlist(
+    lapply(
+      currenttracks@tracks, gapDuration, tstart = tstart, tend = tend, threshold = threshold, tolerance = tolerance
+    )
+  ))
+}
+```
+
+## totalGapProportion
+
+Function in order to calculate the proportion of the duration of gaps for all `Track` objects within a specified `Tracks` object relative to the duration of all `Track` objects within the specified `Tracks` object (and within a specified time period) using the function `gapDuration`.
+
+* Arguments:
+    + `currenttracks`: A `Tracks` object.
+    + `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
+    + `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
+    + `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
+    + `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+    
+* Value:
+    + numeric: The proportion of the duration of gaps for all `Track` objects within a specified `Tracks` object relative to the duration of all `Track` objects within the specified `Tracks` object (and within a specified time period).
+
+```{r totalGapProportion, eval = T, message = F, warning = F}
+totalGapProportion <- function(currenttracks, tstart = min(currenttracks@tracksData$tmin), tend = max(currenttracks@tracksData$tmax), threshold = 18000, tolerance = 2) {
+  totalGapDuration(
+    currenttracks, tstart = tstart, tend = tend, threshold = threshold, tolerance = tolerance
+  ) / timeActiveTracks(currenttracks, tstart = tstart, tend = tend)
+  
+}
+```
+
+## findOutliersTrack
+
+Function in order to identify connections between data points of a specified `Track` object with a speed above a specified threshold value.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
+    + `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
+    + `threshold`: An integer value indicating the threshold for the speed between two data points [m/s] above which this (connection) is considered as a measurement error. Default is `threshold = 180`.
+    
+* Value:
+     + data.frame: A data.frame in the form of the connections slot of a `Track` object containing connections with speed values above `threshold`.
+
+```{r findOutliersTrack, eval = T, message = F, warning = F}
+findOutliersTrack <- function(currenttrack, tstart = min(index(currenttrack@time)), tend = max(index(currenttrack@time)), threshold = 180) {
+  
+  connectionsub <-
+    currenttrack@connections[index(currenttrack@time) >= tstart &
+                               index(currenttrack@time) <= tend, ]
+  na.omit(connectionsub[connectionsub$speed > threshold, ])
+}
+```
+
+## downByDrop !
+
+Function in order to subset a `Track` object by specifying a regular time interval between data points (i.e. performing downsampling). The first value of the `Track` object is retained and therefore represents the starting point of the time point specification accoring to the target time interval. The last entry of a sequence of positioning measurements of the GPS tracker (in "spy" mode) is retained assuming that the assessed position data is the most accurate within the corresponding sequence.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `timeInterval`: An integer value indicating a time interval [s] as target duration between data points of the `Track` object. Default is `timeInterval = 1770` (i.e. 29.5 minutes).
+    + `keepshorter`: A logical value indicating if the endposints of the `Track` object should be retained if the duration of the `Track` object is shorter than the specified `timeInterval`. Default is `keepshorter = T`.
+    
+* Value:
+     + the downsampled `Track` object. If `keepshorter = T`, the values of the slot `data` and of the slot `time` of the returned `Track` object are set to `NA` (indicating that only the last point is valid. This is done in order to enable keeping the class `Track` for the returned object).
+     
+* Issues:
+     + ~Es fehlt noch eine Loesung fuer den Fall, dass der Track nur aus Punkten besteht die weniger als 30 min aus einander liegen -> in dem Fall sollte wenigstens ein Punkt behalten werden!~ **Solution has to be accepted.**
+
+```{r downByDrop, eval = T, message = F, warning = F}
+downByDrop <- function(currenttrack, timeInterval = 1770, keepshorter = T) {
+  j = length(currenttrack@time)
+  dropindexes <- integer()
+  # go through all fixes starting with the one before the last one and check the time interval to the following fix
+  # in the track
+  for (i in (length(currenttrack@time)-1):1) {
+    if (difftime(currenttrack@time[j], currenttrack@time[i], units = "secs") < timeInterval) {
+      dropindexes <- c(dropindexes, i) #if interval is below timeInterval (1770 secs), current fix will be dropped, "j" remains the following fix in the track
+    }
+    else{
+      j <- i # else: current fix will not be dropped, but set as the new following fix "j" 
+    }
+  }
+  
+  # retain first and last data value if the track duration is shorter than timeInterval
+  if(keepshorter == T && j == length(currenttrack@time)){
+    dropindexes <- dropindexes[-which(dropindexes == 1)]
+    # set values for first entry of Track object to NA where possible
+    currenttrack@time[1] <- NA
+    currenttrack@data[1,] <- NA
+  }
+  
+  # build new Track from data at all indexes not in 'dropindexes'
+  # but only if there are at least two of them
+  if(length(dropindexes) < length(currenttrack@time) - 1){
+    downsampled <-
+      Track(
+        STIDF(
+          sp = currenttrack@sp[-dropindexes],
+          time = currenttrack@time[-dropindexes],
+          endTime = currenttrack@endTime[-dropindexes],
+          data = currenttrack@data[-dropindexes, ]
+        )
+      )
+    return(downsampled)
+  }
+}
+```
+
+## downByDropTrs
+
+Function in order to subset all `Track` objects within a specified `Tracks` object by specifying a regular time interval between data points (i.e. performing downsampling) and by using the function `downByDrop`.
+
+* Arguments:
+    + `currenttrs`: A `Tracks` object.
+    + `timeInterval`: An integer value indicating a time interval [s] as target duration between data points of the `Track` object. Default is `timeInterval = 1770` (i.e. 29.5 minutes).
+    
+* Value:
+     + the downsampled `Tracks` object.
+
+```{r downByDropTrs, eval = T, message = F, warning = F}
+downByDropTrs <- function(currenttrs, timeInterval = 1770){
+  tracklist <- lapply(currenttrs@tracks, function(x) downByDrop(x))
+  tracklist <- tracklist[!sapply(tracklist, is.null)]  
+  if(length(tracklist) > 0){
+    trsgen <- Tracks(tracklist)
+    return(trsgen)
+  }
+}
+```
+
+## getNightTrack
+
+Function in order to get all data points of a `Track` object within a specified time interval (several hours) for each day.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. The default is `tstart = 16`.
+    + `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`. The default is `tend = 20`. 
+    
+* Value:
+     + the downsampled `Track` object (containing only data points within the specified time interval).
+     
+```{r getNightTrack, eval = T, message = F, warning = F}
+getNightTrack <- function(currenttrack, tstart = 16, tend = 20) {
+  #get Indexes of fixes within time frame
+  nightindexes <-
+    which(hour(currenttrack@time) >= tstart &
+            hour(currenttrack@time) < tend)
+  
+  #build new Track from data at all indexes in 'nightindexes'
+  #but only if there are at least two of them
+  if(length(nightindexes)>1){
+    nighttrack <-
+      Track(
+        STIDF(
+          sp = currenttrack@sp[nightindexes],
+          time = currenttrack@time[nightindexes],
+          endTime = currenttrack@endTime[nightindexes],
+          data = currenttrack@data[nightindexes, ]
+        )
+      )
+    return(nighttrack)
+  }
+}
+```
+
+## daynightFixesTrack
+
+Function in order to get all data points of a `Track` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) as a `SpatialPointsDataFrame`.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
+    + `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+    
+* Value:
+     + a `SpatialPointsDataFrame` containing all data of the slot `data` of the input `Track` object and a column `night` indicating if a data point is within the specified time interval (`night == 1`) or not (`night == 0`).
+     
+```{r daynightFixesTrack, eval = T, message = F, warning = F}
+daynightFixesTrack <- function (currenttrack,
+                                tstart = 16,
+                                tend = 20) {
+  
+  #get indexes of fixes within time frame
+  nightindexes <- which(hour(currenttrack@time) >= tstart & hour(currenttrack@time) < tend)
+  
+  # get SpatialPoints of all fixes during night
+  nightfixes <- currenttrack@sp[nightindexes,]
+  nightfixes <-
+    SpatialPointsDataFrame(nightfixes, cbind(currenttrack@data[nightindexes,], data.frame(night = rep(
+      1, length(nightfixes)
+    ))))
+  
+  # get SpatialPoints of all other fixes
+  if (length(nightfixes) > 0) {
+    dayfixes <- currenttrack@sp[-nightindexes,]
+    dayfixes <-
+      SpatialPointsDataFrame(dayfixes, cbind(currenttrack@data[-nightindexes,], data.frame(night = rep(
+        0, length(dayfixes))))
+        )
+  }else{
+    dayfixes <- currenttrack@sp
+    dayfixes <-
+      SpatialPointsDataFrame(dayfixes, cbind(currenttrack@data, data.frame(night = rep(
+        0, length(dayfixes))))
+        )
+  }
+  
+  if (length(nightfixes) == 0) {
+    return(dayfixes)
+  } else if (length(dayfixes) == 0) {
+    return(nightfixes)
+  } else{
+    allfixes <- rbind(dayfixes, nightfixes)
+    return(allfixes)
+  }
+  
+}
+
+# alternative (same results, but not ordered according to night)
+daynightFixesTrack <- function (currenttrack,
+                                tstart = 16,
+                                tend = 20) {
+  
+  #get indexes of fixes within time frame
+  nightindexes <- which(hour(currenttrack@time) >= tstart & hour(currenttrack@time) < tend)
+  
+  # create SpatialPointsDataFrame with new attribute night
+  fixes.sp <- currenttrack@sp
+  fixes.data <- currenttrack@data
+  night <- rep(0, nrow(fixes.data))
+  night[nightindexes] <- 1
+  fixes.data$night <- night
+  fixes <- SpatialPointsDataFrame(fixes.sp, fixes.data)
+  
+  # return fixes
+  return(fixes)
+  
+}
+```
+
+## daynightFixesTracks
+
+Function in order to get the data points of all `Track` objects in a `Tracks` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) as a `SpatialPointsDataFrame` using the function `daynightFixesTrack`.
+
+* Arguments:
+    + `currenttracks`: A `Tracks` object.
+    + `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
+    + `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+    
+* Value:
+     + a `SpatialPointsDataFrame` containing all data of the slot `data` of all `Track` objects in the input `Tracks` object and a column `night` indicating if a data point is within the specified time interval (`night == 1`) or not (`night == 0`).
+     
+```{r daynightFixesTracks, eval = T, message = F, warning = F}
+daynightFixesTracks <- function(currenttracks,
+                                tstart = 16,
+                                tend = 20) {
+  trs_daynightfixes <-
+    do.call(
+      rbind,
+      lapply(
+        currenttracks@tracks,
+        daynightFixesTrack,
+        tstart = tstart,
+        tend = tend
+      )
+    )
+  return(trs_daynightfixes)
+}
+```
+
+## getNightConnectionsTrack
+
+Function in order to get all data points of the slot `connections` of a `Track` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) as a data frame.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
+    + `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+    
+* Value:
+     + a data frame representing the corresponding data points of the slot `connections` of the `Track` object within the time interval. 
+     
+```{r getNightConnectionsTrack, eval = T, message = F, warning = F}
+getNightConnectionsTrack <- function(currenttrack,
+                                tstart = 16,
+                                tend = 20) {
+  
+  # get indexes of fixes within time frame  
+  nightindexes <- which(hour(currenttrack@time) >= tstart & hour(currenttrack@time) < tend)
+  
+  # get connection having the nightly fixes as start
+  nightconnections <- currenttrack@connections[nightindexes,]
+  
+  # extract only those connection having also a nightly fix as end (index +1)
+  nightconnections <-
+    nightconnections[is.element(strtoi(row.names(nightconnections)) + 1, nightindexes),]
+  return(nightconnections)
+}
+```
+
+## getNightMovementTracks
+
+Function in order to get the mean value for the column `distance` of the slot `connections` of all `Track` objects of a `Tracks` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) using the function `getNightConnectionsTrack`. Additionally, the function removes all data points with a value `connections$duration < 1700` and`connections$duration > 1900` (s).
+
+* Arguments:
+    + `currenttracks`: A `Tracks` object.
+    + `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
+    + `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+    
+* Value:
+     + a numeric value representing the mean of the column `speed` of the slot `connections` of all `Track` objects of a `Tracks` object within the time interval and with a value `connections$duration > 1700` and`connections$duration < 1900` (s). 
+     
+```{r getNightMovementTracks, eval = T, message = F, warning = F}
+getNightMovementTracks <- function(currenttracks, 
+                                   tstart = 16, 
+                                   tend = 20){
+  
+  # get connections
+  trs_nightconnections <- 
+    do.call(
+      rbind,
+      lapply(
+        currenttracks@tracks,
+        getNightConnectionsTrack, 
+        tstart = tstart, 
+        tend = tend
+        )
+      )
+  
+  # eliminate data points outside duration target interval
+  trs_nightconnections <- trs_nightconnections[trs_nightconnections$duration > 1700 & trs_nightconnections$duration < 1900,]
+  
+  # get mean of corresponding distance values
+  return(mean(trs_nightconnections$distance))
+}
+```
+
+## getNightSpeedTracks
+
+Function in order to get the mean value for the column `speed` of the slot `connections` of all `Track` objects of a `Tracks` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) using the function `getNightConnectionsTrack`.
+
+* Arguments:
+    + `currenttracks`: A `Tracks` object.
+    + `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
+    + `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+    
+* Value:
+     + a numeric value representing the mean of the column `speed` of the slot `connections` of all `Track` objects of a `Tracks` object within the time interval. 
+     
+```{r getNightSpeedTracks, eval = T, message = F, warning = F}
+#same as above but without subsetting of durations and calculating speed
+getNightSpeedTracks <- function(currenttracks, 
+                                tstart = 16, 
+                                tend = 20){
+  
+  trs_nightconnections <- 
+    do.call(
+      rbind,
+      lapply(
+        currenttracks@tracks,
+        getNightConnectionsTrack, 
+        tstart = tstart, 
+        tend = tend
+        )
+      )
+  
+  # get mean of corresponding speed values
+  return(mean(trs_nightconnections$speed))
+}
+```
+
+## getDayConnectionsTrack
+
+Function in order to get all data points of the slot `connections` of a `Track` object outside a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) as a data frame (complementary to `getNightConnectionsTrack`).
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
+    + `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+    
+* Value:
+     + a data frame representing the corresponding data points of the slot `connections` of the `Track` object outside the time interval. 
+     
+```{r getDayConnectionsTrack, eval = T, message = F, warning = F}
+getDayConnectionsTrack <- function(currenttrack,
+                              tstart = 16,
+                              tend = 20) {
+  
+  # get connection having the nightly fixes as start
+  nightconnections <-
+    getNightConnectionsTrack(currenttrack, tstart, tend)
+  
+  # get the corresponding daily fixes
+  dayconnections <-
+    currenttrack@connections[-strtoi(row.names(nightconnections)), ]
+  
+  return(dayconnections)
+}
+```
+
+## getDayMovementTracks
+
+Function in order to get the mean value for the column `distance` of the slot `connections` of all `Track` objects of a `Tracks` object outside a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) using the function `getDayConnectionsTrack`. Additionally, the function removes all data points with a value `connections$duration < 1700` and`connections$duration > 1900` (s).
+
+* Arguments:
+    + `currenttracks`: A `Tracks` object.
+    + `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
+    + `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+    
+* Value:
+     + a numeric value representing the mean of the column `distance` of the slot `connections` of all `Track` objects of a `Tracks` object outside the time interval and with a value `connections$duration > 1700` and`connections$duration < 1900` (s). 
+     
+```{r getDayMovementTracks, eval = T, message = F, warning = F}
+#function to apply getDayConnectionsTrack on all tracks of a Tracks-Object, remove connections < 1700 and >1900 secs
+#duration and return mean distance of alle remaining connections
+getDayMovementTracks <- function(currenttracks, 
+                                 tstart = 16, 
+                                 tend = 20){
+  
+  # get connections
+  trs_dayconnections <- 
+    do.call(rbind,
+            lapply(
+              currenttracks@tracks,
+              getDayConnectionsTrack, 
+              tstart = tstart, 
+              tend = tend
+              )
+            )
+  
+  # eliminate data points outside duration target interval
+  trs_dayconnections <- trs_dayconnections[trs_dayconnections$duration > 1700 & trs_dayconnections$duration < 1900,]
+  
+  # get mean of corresponding distance values
+  return(mean(trs_dayconnections$distance))
+}
+```
+
+## getDaySpeedTracks
+
+Function in order to get the mean value for the column `speed` of the slot `connections` of all `Track` objects of a `Tracks` object outside a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) using the function `getDayConnectionsTrack`.
+
+* Arguments:
+    + `currenttracks`: A `Tracks` object.
+    + `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
+    + `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+    
+* Value:
+     + a numeric value representing the mean of the column `speed` of the slot `connections` of all `Track` objects of a `Tracks` object outside the time interval. 
+     
+```{r getDaySpeedTracks, eval = T, message = F, warning = F}
+#same as above but without subsetting of durations and calculating speed
+getDaySpeedTracks <- function(currenttracks, 
+                                tstart = 16, 
+                                tend = 20){
+  
+  trs_dayconnections <- 
+    do.call(
+      rbind,
+      lapply(
+        currenttracks@tracks,
+        getDayConnectionsTrack, 
+        tstart = tstart, 
+        tend = tend
+        )
+      )
+  
+  # get mean of corresponding speed values
+  return(mean(trs_dayconnections$speed))
+}
+```
+
+## daytimeMovement
+
+Function in order to compute several summary indices (mean distance, mean speed and maximum speed between subsequent points) for a `Track` object inside or outside a specified time interval (several hours) for each day using the function `getNightConnectionsTrack`.
+
+* Arguments:
+    + `currenttrack`: A `Track` object.
+    + `nightstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
+    + `nightend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `nightend` has to be larger than `nightstart`.
+    + `night`: A logical value indicating if the computations should be performed on the data points within the time interval (`night == T`) or outside the time interval (`night == F`). Default is `night = T`.
+    
+* Value:
+     + a list containing as columns:
+          1. `mean_distance`: The mean distance between subsequent data points of the `Track` object within or outside the specified time interval.
+          2. `mean_speed`: The mean speed between subsequent data points of the `Track` object within or outside the specified time interval.
+          3. `max_speed`: The maximum speed between subsequent data points of the `Track` object within or outside the specified time interval.
+     
+```{r daytimeMovement, eval = T, message = F, warning = F}
+daytimeMovement <-
+  function(currenttrack,
+           nightstart,
+           nightend,
+           night = TRUE) {
+    
+    #call function to get nightly connections passing on the input parameters
+    currentconnections <-
+      getNightConnectionsTrack(currenttrack, nightstart, nightend)
+    # invert selection, if night==FALSE
+    if (night == FALSE) {
+      currentconnections <-
+        currenttrack@connections[-strtoi(row.names(currentconnections)),]
+    }
+    #create list with movement indicators during desired time of day
+    movement <-
+      list(
+        mean_distance = mean(currentconnections$distance),
+        mean_speed = mean(currentconnections$speed),
+        max_speed = max(currentconnections$speed)
+      )
+    return(movement)
+  }
+```
+
+## elevDiff
+
+## abselevDiff
