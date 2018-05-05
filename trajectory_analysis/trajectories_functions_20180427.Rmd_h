@@ -483,22 +483,24 @@ downByDropTrs <- function(currenttrs, timeInterval = 1770){
 }
 ```
 
-## downByDropSP
+## downByDrop
 
-Function in order to subset a `Track` object by specifying a regular time interval between data points (i.e. performing downsampling) and extract these entries as `SpatialPointsDataFrame`. The first value of the `Track` object is retained and therefore represents the starting point of the time point specification accoring to the target time interval. The last entry of a sequence of positioning measurements of the GPS tracker (in "spy" mode) is retained assuming that the assessed position data is the most accurate within the corresponding sequence.
+Function in order to subset a `Track` object by specifying a regular time interval between data points (i.e. performing downsampling). The first value of the `Track` object represents the starting point of the time point specification according to the target time interval. The last entry of a sequence of positioning measurements of the GPS tracker (in "spy" mode) is retained assuming that the assessed position data is the most accurate within the corresponding sequence. Points of a the `Track` object are only returned if there are at least two data values with a time interval as long as the specified time interval in the `Track` object.
 
 * Arguments:
     + `currenttrack`: A `Track` object.
     + `timeInterval`: An integer value indicating a time interval [s] as target duration between data points of the `Track` object. Default is `timeInterval = 1770` (i.e. 29.5 minutes).
-    + `keepshorter`: A logical value indicating if the last value of the `Track` object should be retained if the duration of the `Track` object is shorter than the specified `timeInterval`. Default is `keepshorter = T`.
+    + `quiet`: A logical value indicating if a warning should be printed if the specified `Track` object is shorter than the specified time interval. If `quiet = F`, a warning will be printed, if `quiet = T`, this will not happen.
     
 * Value:
-     + a `STIDF` object containing the downsampled data values of the corresponding `Track` object related to points, i.e. locations. The information on connection between the points (except for the time) is lost.
+     + the downsampled `Track` object. If the specified `Track` object is shorter than the specified time interval, the function returns `NULL`.
 
-```{r downByDropSP, eval = T, message = F, warning = F}
-downByDropSP <- function(currenttrack, timeInterval = 1770, keepshorter = T) {
+```{r downByDrop, eval = T, message = F, warning = F}
+downByDrop <- function(currenttrack, timeInterval = 1770, quiet = F) {
+  
   j = length(currenttrack@time)
   dropindexes <- integer()
+
   # go through all fixes starting with the one before the last one and check the time interval to the following fix
   # in the track
   for (i in (length(currenttrack@time)-1):1) {
@@ -510,44 +512,49 @@ downByDropSP <- function(currenttrack, timeInterval = 1770, keepshorter = T) {
     }
   }
   
-  # create data frame with the data of the former Track object
-  if(ncol(currenttrack@data) == 1){
-    data.df <- data.frame(x = currenttrack@data[-dropindexes, ])
-    names(data.df) <- names(currenttrack@data)
-  }else{
-    data.df <- currenttrack@data[-dropindexes, ]
-  }
-  
-  # Create STIDF object containing the downsampled data
-  if(length(dropindexes) < length(currenttrack@time) - 1 || keepshorter == T){
+  # build new Track from data at all indexes not in 'dropindexes'
+  # but only if there are at least two of them
+  if(length(dropindexes) < length(currenttrack@time) - 1){
     downsampled <-
-    STIDF(
-      sp = currenttrack@sp[-dropindexes],
-      time = currenttrack@time[-dropindexes],
-      endTime = currenttrack@endTime[-dropindexes],
-      data = currenttrack@data[-dropindexes, ]
+      Track(
+        STIDF(
+          sp = currenttrack@sp[-dropindexes],
+          time = currenttrack@time[-dropindexes],
+          endTime = currenttrack@endTime[-dropindexes],
+          data = currenttrack@data[-dropindexes, ]
+        )
       )
     return(downsampled)
+  }else if (quiet == F){
+    warning("Warning: The specified Track object is shorter than the specified time interval. No ouput created. \n")
+    return(NULL)
   }
 }
 ```
 
-## downByDropSPTrs
+## downByDropTrs
 
-Function in order to subset all `Track` objects within a specified `Tracks` object by specifying a regular time interval between data points (i.e. performing downsampling) and by using the function `downByDropSP`.
+Function in order to subset all `Track` objects within a specified `Tracks` object by specifying a regular time interval between data points (i.e. performing downsampling) and by using the function `downByDrop`.
 
 * Arguments:
     + `currenttrs`: A `Tracks` object.
     + `timeInterval`: An integer value indicating a time interval [s] as target duration between data points of the `Track` object. Default is `timeInterval = 1770` (i.e. 29.5 minutes).
-    + `keepshorter`: A logical value indicating if the last value of each `Track` object should be retained if the duration of the `Track` object is shorter than the specified `timeInterval`. Default is `keepshorter = T`.
+    + `quiet`: A logical value indicating if a warning should be printed if the specified `Track` object is shorter than the specified time interval. If `quiet = F`, a warning will be printed, if `quiet = T`, this will not happen.
     
 * Value:
-     + a `list` with `STIDF` objects containing the downsampled data values of the corresponding `Track` object related to points, i.e. locations, for each `Track` object within the `Tracks` object. The information on connection between the points (except for the time) is lost.
+     + A list containing (1) the downsampled `Tracks` object (omitting `Track` objects that are shorter than the specified time interval) and a vector indicating the indices of the `Track` objects of the input `Tracks` object that are shorter than the specified time interval.
 
-```{r downByDropSPTrs, eval = T, message = F, warning = F}
-downByDropSPTrs <- function(currenttrs, timeInterval = 1770, keepshorter = T){
-  stidflist <- lapply(currenttrs@tracks, function(x) downByDropSP(x))
- return(stidflist)
+```{r downByDropTrs, eval = T, message = F, warning = F}
+downByDropTrs <- function(currenttrs, timeInterval = 1770, quiet = F){
+  tracklist <- lapply(currenttrs@tracks, function(x) downByDrop(x, timeInterval = timeInterval))
+  tooshort <- which(sapply(tracklist, is.null) == T)
+  tracklist <- tracklist[!sapply(tracklist, is.null)]  
+  if(length(tracklist) > 0){
+    trsgen <- Tracks(tracklist)
+    return(list(trsgen, tooshort))
+  }else if(quiet == F){
+    warning("Waring: All Track objects of the specified Tracks objects are shorter than the specified time interval.")
+  }
 }
 ```
 
