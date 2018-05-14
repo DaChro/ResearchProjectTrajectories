@@ -20,7 +20,7 @@ text-align: justify}
 Definition of the workspace
 ```{r workspace_definition, eval = T, message = F, warning = F}
 # define directory to obtain data from
-directory.data = "C:/Herders/trajectories/"
+#directory.data = "C:/Herders/trajectories/"
 ```
 
 Load required packages
@@ -34,6 +34,9 @@ library(rglwidget)
 library(mapview)
 library(xts)
 library(lubridate)
+library(spatstat)
+library(rgeos)
+library(maptools)
 
 ```
 
@@ -495,7 +498,7 @@ Function in order to subset a `Track` object by specifying a regular time interv
 * Value:
      + the downsampled `Track` object. If the specified `Track` object is shorter than the specified time interval, the function returns `NULL`.
 
-```{r downByDrop, eval = T, message = F, warning = F}
+```{r downByDrop2, eval = T, message = F, warning = F}
 downByDrop <- function(currenttrack, timeInterval = 1770, quiet = F) {
   
   j = length(currenttrack@time)
@@ -544,7 +547,7 @@ Function in order to subset all `Track` objects within a specified `Tracks` obje
 * Value:
      + A list containing (1) the downsampled `Tracks` object (omitting `Track` objects that are shorter than the specified time interval) and a vector indicating the indices of the `Track` objects of the input `Tracks` object that are shorter than the specified time interval.
 
-```{r downByDropTrs, eval = T, message = F, warning = F}
+```{r downByDropTrs2, eval = T, message = F, warning = F}
 downByDropTrs <- function(currenttrs, timeInterval = 1770, quiet = F){
   tracklist <- lapply(currenttrs@tracks, function(x) downByDrop(x, timeInterval = timeInterval))
   tooshort <- which(sapply(tracklist, is.null) == T)
@@ -941,6 +944,88 @@ daytimeMovement <-
       )
     return(movement)
   }
+```
+
+## qTopology
+
+Function to to determine topology for grid and quadratcount, i.e. size in x and y such that the window of the ppp can be split in an even number of quadrats,approximating a certain target size, e.g. 1000m. This function is used by function `pointsperquad` to create the cells in which to count the number of points.
+
+* Arguments:
+    + `ppp`: A `ppp` (point pattern dataset) object.
+    + `targetQsize`: Target size of the quadrats to be created.
+
+```{r qTopology, eval = T, message = F, warning = F}
+qTopology <- function(ppp, targetQsize) {
+  #determine next number of quadrats in x and y direction, by simple rounding
+  targetQsize <- targetQsize
+  nqx <- round((ppp$window$xrange[2] -
+  ppp$window$xrange[1]) / targetQsize)
+  nqy <- round((ppp$window$yrange[2] -
+  ppp$window$yrange[1]) / targetQsize)
+  #determine quadrat size using rounded number of cells
+  qsizeX <-
+  (ppp$window$xrange[2] - ppp$window$xrange[1]) / nqx
+  qsizeY <-
+  (ppp$window$yrange[2] - ppp$window$yrange[1]) / nqy
+  
+  return (list(
+  qsizeX = qsizeX,
+  qsizeY = qsizeY,
+  nqx = nqx,
+  nqy = nqy
+  ))
+}
+```
+
+## pointsPerQuad
+
+Function to determine points per cell (of a given size) in a tracks-object. Takes a `Tracks` object and a target size of the cells as input and returns a `SpatialGridDataFrame` with quadrat cells and the number of points within them. This function is used by function `extractClusters` to create count the number of points within cells before determining clusters of points.
+
+* Arguments:
+    + `trs`: A `Tracks`object.
+    + `qsize`: Target size of the quadrats in which to count the number of points of the `Tracks` object.
+
+```{r pointsPerQuad, eval = T, message = F, warning = F}
+pointsPerQuad <- function(trs, qsize) {
+  #transform to UTM
+  trsSP <- as(as(trs, "SpatialLines"), "SpatialPoints")
+  trsSPtrans <-
+  spTransform(
+  trsSP,
+  CRS(
+  "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+  )
+  )
+  #convert to ppp
+  trsPPP <- as(trsSPtrans, "ppp")
+  
+  #use function qTopology to determine dimensions and number of cells for grid and quadratcount
+  qtopo <- qTopology(trsPPP, qsize)
+  qsizeX <- qtopo$qsizeX
+  qsizeY <- qtopo$qsizeY
+  nqx <- qtopo$nqx
+  nqy <- qtopo$nqy
+  
+  #create SpatialGridDataFrame with number of counts of points per grid cell using quadratcount, and with dimensions determined above
+  trsGrid <-
+  SpatialGridDataFrame(
+  GridTopology(
+  c(
+  trsPPP$window$xrange[1] + qsizeX / 2,
+  trsPPP$window$yrange[1] + qsizeY / 2
+  ),
+  c(qsizeX, qsizeY),
+  c(nqx, nqy)
+  ),
+  data.frame(count = as.numeric(matrix(
+  as.numeric(quadratcount(trsPPP, nx = nqx, ny = nqy)), nqx, nqy, byrow =
+  T
+  ))),
+  proj4string = proj4string(trsSPtrans)
+  )
+  
+  return (trsGrid)
+}
 ```
 
 ## elevDiff
