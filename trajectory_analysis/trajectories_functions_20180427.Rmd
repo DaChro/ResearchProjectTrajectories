@@ -20,7 +20,7 @@ text-align: justify}
 Definition of the workspace
 ```{r workspace_definition, eval = T, message = F, warning = F}
 # define directory to obtain data from
-#directory.data = "C:/Herders/trajectories/"
+# directory.data = "C:/Herders/trajectories/"
 ```
 
 Load required packages
@@ -1006,7 +1006,7 @@ pointsPerQuad <- function(trs, qsize) {
   nqx <- qtopo$nqx
   nqy <- qtopo$nqy
   
-  #create SpatialGridDataFrame with number of counts of points per grid cell using quadratcount, and with dimensions determined above
+  #create SpatialGridDataFrame with number of counts of points per grid cell using quadratcount,   and with dimensions determined above
   trsGrid <-
   SpatialGridDataFrame(
   GridTopology(
@@ -1026,6 +1026,29 @@ pointsPerQuad <- function(trs, qsize) {
   
   return (trsGrid)
 }
+```
+
+## extractClusters
+
+Function to extract clusters using the function `pointsPerQuad`. Takes a cellsize (for the cells in which to count the points) and a threshold for the number of points per cell as arguments.
+
+* Arguments:
+    + `currenttracks`: A `Tracks`object.
+    + `cellsize`: Desired size of the cells in which to count the points.
+    + `threshold`: Threshold (number of points per cell) defining a "cluster".
+
+```{r estractClusters, eval = T, message = F, warning = F}
+extractClusters <-
+  function(currenttracks,
+           cellsize = 1000,
+           threshold = 300) {
+    trsGrid <- pointsPerQuad(currenttracks, cellsize)
+    #convert to SpatialPolygonsDataFrame
+    trsGridSPDF <- as(trsGrid, "SpatialPolygonsDataFrame")
+    #get cells with count > threshold
+    clusters <- trsGridSPDF[which(trsGridSPDF$count > threshold), ]
+    return(clusters)
+  }
 ```
 
 ## elevDiff
