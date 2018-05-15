@@ -597,6 +597,29 @@ getNightTrack <- function(currenttrack, tstart = 16, tend = 20) {
 }
 ```
 
+## getNightTrs
+Function to apply getNightTrack on all Tracks of a Tracks-Object.
+
+* Arguments:
+    + `currenttrs`: A `Tracks` object.
+    + `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. The default is `tstart = 16`.
+    + `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`. The default is `tend = 20`. 
+    
+* Value:
+     + the downsampled `Tracks` object (containing only data points within the specified time interval)
+
+```{r getNightTrs, eval = T, message = F, warning = F}
+getNightTrs <- function(currenttrs, tstart = 16, tend =20 ){
+  tracklist <- lapply(currenttrs@tracks, getNightTrack, tstart=tstart, tend =tend)
+  tracklist <- tracklist[!sapply(tracklist, is.null)]  
+  if(length(tracklist) > 0){
+    trsnight <- Tracks(tracklist)
+    return(trsnight)
+  }
+}
+```
+
+
 ## daynightFixesTrack
 
 Function in order to get all data points of a `Track` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) as a `SpatialPointsDataFrame`.
