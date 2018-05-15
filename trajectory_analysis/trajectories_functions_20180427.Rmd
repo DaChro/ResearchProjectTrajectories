@@ -948,7 +948,7 @@ daytimeMovement <-
 
 ## qTopology
 
-Function to to determine topology for grid and quadratcount, i.e. size in x and y such that the window of the ppp can be split in an even number of quadrats,approximating a certain target size, e.g. 1000m. This function is used by function `pointsperquad` to create the cells in which to count the number of points.
+Function to determine topology for grid and quadratcount, i.e. size in x and y such that the window of the ppp can be split in an even number of quadrats,approximating a certain target edge length, e.g. 1000m. This function is used by function `pointsPerQuad` to create the cells in which to count the number of points.
 
 * Arguments:
     + `ppp`: A `ppp` (point pattern dataset) object.
@@ -979,7 +979,7 @@ qTopology <- function(ppp, targetQsize) {
 
 ## pointsPerQuad
 
-Function to determine points per cell (of a given size) in a tracks-object. Takes a `Tracks` object and a target size of the cells as input and returns a `SpatialGridDataFrame` with quadrat cells and the number of points within them. This function is used by function `extractClusters` to create count the number of points within cells before determining clusters of points.
+Function to determine points per cell (of a given size) in a tracks-object. Takes a `Tracks` object and a target size of the cells as input and returns a `SpatialGridDataFrame` with quadrat cells and the number of points within them. This function is used by function `extractClusters` to count the number of points within cells before determining clusters of points.
 
 * Arguments:
     + `trs`: A `Tracks`object.
@@ -1030,7 +1030,7 @@ pointsPerQuad <- function(trs, qsize) {
 
 ## extractClusters
 
-Function to extract clusters using the function `pointsPerQuad`. Takes a cellsize (for the cells in which to count the points) and a threshold for the number of points per cell as arguments.
+Function to extract clusters using the function `pointsPerQuad`. Takes a `Tracks` object, a cellsize (for the cells in which to count the points) and a threshold for the number of points per cell as arguments. Returns a `SpatialPolygonsDataFrame` holding the cells determined as clusters.
 
 * Arguments:
     + `currenttracks`: A `Tracks`object.
