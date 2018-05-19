@@ -976,6 +976,9 @@ Function to determine topology for grid and quadratcount, i.e. size in x and y s
 * Arguments:
     + `ppp`: A `ppp` (point pattern dataset) object.
     + `targetQsize`: Target size of the quadrats to be created.
+    
+* Value:
+    + a list containing the size and number of cells in x and y
 
 ```{r qTopology, eval = T, message = F, warning = F}
 qTopology <- function(ppp, targetQsize) {
@@ -1008,16 +1011,19 @@ Function to determine points per cell (of a given size) in a tracks-object. Take
     + `trs`: A `Tracks`object.
     + `qsize`: Target size of the quadrats in which to count the number of points of the `Tracks` object.
 
+* Value:
+    + a `SpatialGridDataFrame` with quadrat cells and the number of points within them
+
 ```{r pointsPerQuad, eval = T, message = F, warning = F}
 pointsPerQuad <- function(trs, qsize) {
   #transform to UTM
   trsSP <- as(as(trs, "SpatialLines"), "SpatialPoints")
   trsSPtrans <-
   spTransform(
-  trsSP,
-  CRS(
-  "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
-  )
+    trsSP,
+    CRS(
+    "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+    )
   )
   #convert to ppp
   trsPPP <- as(trsSPtrans, "ppp")
@@ -1032,19 +1038,19 @@ pointsPerQuad <- function(trs, qsize) {
   #create SpatialGridDataFrame with number of counts of points per grid cell using quadratcount,   and with dimensions determined above
   trsGrid <-
   SpatialGridDataFrame(
-  GridTopology(
-  c(
-  trsPPP$window$xrange[1] + qsizeX / 2,
-  trsPPP$window$yrange[1] + qsizeY / 2
-  ),
-  c(qsizeX, qsizeY),
-  c(nqx, nqy)
-  ),
-  data.frame(count = as.numeric(matrix(
-  as.numeric(quadratcount(trsPPP, nx = nqx, ny = nqy)), nqx, nqy, byrow =
-  T
-  ))),
-  proj4string = proj4string(trsSPtrans)
+    GridTopology(
+      c(
+        trsPPP$window$xrange[1] + qsizeX / 2,
+        trsPPP$window$yrange[1] + qsizeY / 2
+      ),
+      c(qsizeX, qsizeY),
+      c(nqx, nqy)
+    ),
+    data.frame(count = as.numeric(matrix(
+    as.numeric(quadratcount(trsPPP, nx = nqx, ny = nqy)), nqx, nqy, byrow =
+    T
+    ))),
+    proj4string = proj4string(trsSPtrans)
   )
   
   return (trsGrid)
@@ -1059,6 +1065,9 @@ Function to extract clusters using the function `pointsPerQuad`. Takes a `Tracks
     + `currenttracks`: A `Tracks`object.
     + `cellsize`: Desired size of the cells in which to count the points.
     + `threshold`: Threshold (number of points per cell) defining a "cluster".
+
+* Value: 
+    + `SpatialPolygonsDataFrame` holding the cells determined as clusters
 
 ```{r estractClusters, eval = T, message = F, warning = F}
 extractClusters <-
