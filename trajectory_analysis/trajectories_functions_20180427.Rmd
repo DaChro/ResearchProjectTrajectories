@@ -1069,7 +1069,7 @@ Function to extract clusters using the function `pointsPerQuad`. Takes a `Tracks
 * Value: 
     + `SpatialPolygonsDataFrame` holding the cells determined as clusters
 
-```{r estractClusters, eval = T, message = F, warning = F}
+```{r extractClusters, eval = T, message = F, warning = F}
 extractClusters <-
   function(currenttracks,
            cellsize = 1000,
@@ -1086,3 +1086,175 @@ extractClusters <-
 ## elevDiff
 
 ## abselevDiff
+
+## exDataTracks
+
+Function in order to extract the slot `data` for all `Track` objects of a `Tracks object` and to add the slot `time` for all `Track` objects of a `Tracks object` as a column to the resulting `data.frame` object.
+
+* Arguments:
+    + `trs`: A `Tracks`object.
+
+* Value: 
+    + `list` containing the `data.frame` objects representing the slot `data` and `time` (binded together as `data.frame`) of the `Track` objects of the specified `Tracks` object as elements.
+
+```{r exDataTracks, eval = T, message = F, warning = F}
+exDataTracks <- function(trs
+                      ){
+  df <- do.call(rbind, lapply(trs@tracks, function(x){
+    df <- x@data
+    df$time <- as.POSIXct(x@time)
+    df
+    }))
+}
+```
+
+
+## locationsTracks
+
+Function in order to identify distinct locations in a `Tracks` object and the order of the visit of these locations and in order to compute various variables concerning the visit of a specific location (mean latitude, mean longitude, mean elevation, residence time, arrival time, departure time, speed). The identification of locations is based on the identification of clusters of fixes by identifying intersecting buffers around each fix. Campsites are distinguished from other locations by a specified minimal residence time.
+
+* Arguments:
+    + `trs`: A `Tracks`object.
+    + `radius`: The radius of the buffers computed around each value [m] which are used for clustering values to locations. Default is `radius = 200` [m].
+    + `t.min`: The minimum residence time at a specific location [s] which is used to classify locations as campsites (if the residence time is larger than `t.min`) in contrast to other locations. The default is `t.min = 345600`, i.e. 4 days.
+
+* Value: 
+    + `data.frame` containing the following columns:
+        1. `location`: An integer value discriminating different locations.
+        2. `res.time`: The residence time at a specific location [s].
+        3. `campsite`: A logical value indicating whether a specific visit of a location is considered as campsite or not (based on `t.min`).
+        4. `arrival.time`: A character representing the arrival time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`.
+        5. `departure.time`: A character representing the departure time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`.
+        6. `lat`: A numeric value representing the centroids for the latitude of fixes corresponding to a specific visit of a location [°].
+        7. `lon`: A numeric value representing the centroids for the longitude of fixes corresponding to a specific visit of a location [°].
+        8. `alt`: A numeric value representing the mean elevation value of fixes corresponding to a specific visit of a location [m].
+        9. `speed`: A numeric value indicating the mean speed at the time fixes were taken for fixes corresponding to a specific visit of a location [m s<sup>-1</sup>].
+        
+* Issues: A solution has to be found for the case that only one location is present in a `Tracks` object. (will not result in a `Tracks` object. Additionally, the data gathering is not straightforward in this case).
+
+```{r locationsTracks, eval = T, message = F, warning = F}
+locationsTracks <- function(trs,
+                            radius = 200,
+                            t.min = 345600
+                      ){
+  
+  # get Tracks data
+  trs.df <- exDataTracks(trs)
+  
+  # convert track to SpatialPointsDataFrame and transform to UTM
+  trsSP <- as(as(trs, "SpatialLines"), "SpatialPoints")
+  trsSP <-
+    spTransform(
+      trsSP,
+      CRS(
+        "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+      )
+    )
+  trsSP <- SpatialPointsDataFrame(trsSP, trs.df)
+  
+  # indices with points that have not been assigned to a cluster yet
+  leftover <- c(1:length(trsSP))
+  leftover.old <- leftover
+  
+  # param for first run
+  first = T
+  
+  while(length(leftover) != 0){
+    
+    # subset points for buffering
+    ind.select <- leftover[seq(1, length(leftover), by = length(leftover)*0.01)]
+    
+    # define subset trsSP
+    # trsSP.sub <- trsSP[ind.select,]
+    
+    # compute buffer
+    buffer.trs <- gBuffer(trsSP[ind.select,], width = radius, quadsegs = 25)
+    
+    # get subsecting points
+    a.new <- over(trsSP, disaggregate(buffer.trs))
+    
+    if(first == T){
+      # get intersecting points
+      a.tot <- a.new
+      
+      first = F
+    }
+    
+    # adjust indices of intersecting points
+    ind.sub1 <- unique(a.new[which(is.na(a.tot) == F & is.na(a.new) == F)])
+    ind.sub2 <- unique(a.tot[which(is.na(a.tot) == F & is.na(a.new) == F)])
+    for(i in c(1:length(ind.sub1))){
+      a.new[which(a.new == ind.sub1[i])] <- ind.sub2[i] 
+    }
+    
+    # merge a.tot and a.new
+    a.tot[which((is.na(a.tot) == F & is.na(a.new) == F)|(is.na(a.tot) & is.na(a.new) == F))] <- a.new[which((is.na(a.tot) == F & is.na(a.new) == F)|(is.na(a.tot) & is.na(a.new) == F))]
+    
+    # subset leftover
+    if(length(which(is.na(a.tot))) != 0){
+      leftover <- leftover.old[which(is.na(a.tot))]
+    }else{
+      leftover = NULL
+    }
+    
+  }
+  
+  # add variable to trsSP
+  trsSP$campsites <- a.tot
+  
+  # find order of campsite visits
+  order.campsite.vis <- 1
+  for(fi in c(1:length(a.tot))){
+    if(a.tot[fi] != a.tot[order.campsite.vis[length(order.campsite.vis)]]){
+      order.campsite.vis <- c(order.campsite.vis, fi)
+      }
+    if(fi == length(a.tot) && length(order.campsite.vis) == 1){
+      order.campsite.vis <- c(order.campsite.vis, fi)
+    }
+  }
+  
+  # create a list with respective indices
+  order.campsite.vis <- rbind(order.campsite.vis[-length(order.campsite.vis)], order.campsite.vis[-1])
+  order.campsite.vis <- list(apply(order.campsite.vis, 2, function(x){x[1]:x[2]}))[[1]]
+  
+  # calculate various variables connected to campsites
+  campsites.var <- data.frame(location = trsSP$campsites[sapply(order.campsite.vis, function(x){x[1]})],
+                              res.time = sapply(order.campsite.vis, function(x){difftime(trsSP$time[range(x)[2]], trsSP$time[range(x)[1]], units = "sec")}))
+  
+  # define a variable classifying locations as campsites or short term visits
+  campsites.var$campsite <- rep(T, nrow(campsites.var))
+  campsites.var$campsite[which(campsites.var$res.time < t.min)] <- F
+  
+  # get arrival and departure time
+  campsites.var$arrival.time <- sapply(order.campsite.vis, function(x){as.character(trsSP$time[x[1]])})
+  campsites.var$departure.time <- sapply(order.campsite.vis, function(x){as.character(trsSP$time[x[length(x)]])})
+  
+  # get mean position data for each location visit
+  campsites.var$lat <- sapply(order.campsite.vis, function(x){mean(trsSP$lat[x])})
+  campsites.var$lon <- sapply(order.campsite.vis, function(x){mean(trsSP$lon[x])})
+  campsites.var$alt <- sapply(order.campsite.vis, function(x){mean(trsSP$HEIGHT[x])})
+  
+  # get mean speed at each location visit
+  campsites.var$speed <- sapply(order.campsite.vis, function(x){mean(trsSP$SPEED[x])})
+
+  # create SpatialPointsDataFrame from campsites.var
+  campsites.var1 <- campsites.var
+  campsites.var <- SpatialPoints(coords = data.frame(lon = campsites.var$lon, lat = campsites.var$lat), proj4string = CRS(
+        "+proj=longlat +zone=46 +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"
+      ))
+campsites.var <-
+    spTransform(
+      campsites.var,
+      CRS(
+        "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+      )
+    )
+  
+  # create Track object from campsites.var
+  campsites.var <- Track(STIDF(sp = campsites.var, time = as.POSIXct(campsites.var1$arrival.time) , data = campsites.var1, endTime = as.POSIXct(campsites.var1$departure.time)))
+  
+  return(campsites.var)
+}
+```
+
+
