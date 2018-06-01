@@ -1067,7 +1067,7 @@ Function to extract clusters using the function `pointsPerQuad`. Takes a `Tracks
     + `threshold`: Threshold (number of points per cell) defining a "cluster".
 
 * Value: 
-    + `SpatialPolygonsDataFrame` holding the cells determined as clusters
+    + a `SpatialPolygonsDataFrame` holding the cells determined as clusters
 
 ```{r estractClusters, eval = T, message = F, warning = F}
 extractClusters <-
