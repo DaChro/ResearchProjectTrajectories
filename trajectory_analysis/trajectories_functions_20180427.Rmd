@@ -504,8 +504,7 @@ downByDrop <- function(currenttrack, timeInterval = 1770, quiet = F) {
   j = length(currenttrack@time)
   dropindexes <- integer()
 
-  # go through all fixes starting with the one before the last one and check the time interval to the following fix
-  # in the track
+  # go through all fixes starting with the one before the last one and check the time interval to the following fix in the track
   for (i in (length(currenttrack@time)-1):1) {
     if (difftime(currenttrack@time[j], currenttrack@time[i], units = "secs") < timeInterval) {
       dropindexes <- c(dropindexes, i) #if interval is below timeInterval (1770 secs), current fix will be dropped, "j" remains the following fix in the track
@@ -978,7 +977,7 @@ Function to determine topology for grid and quadratcount, i.e. size in x and y s
     + `targetQsize`: Target size of the quadrats to be created.
     
 * Value:
-    + a list containing the size and number of cells in x and y
+    + A list containing the size and number of cells in x and y
 
 ```{r qTopology, eval = T, message = F, warning = F}
 qTopology <- function(ppp, targetQsize) {
@@ -1012,7 +1011,7 @@ Function to determine points per cell (of a given size) in a tracks-object. Take
     + `qsize`: Target size of the quadrats in which to count the number of points of the `Tracks` object.
 
 * Value:
-    + a `SpatialGridDataFrame` with quadrat cells and the number of points within them
+    + A `SpatialGridDataFrame` with quadrat cells and the number of points within them
 
 ```{r pointsPerQuad, eval = T, message = F, warning = F}
 pointsPerQuad <- function(trs, qsize) {
@@ -1067,7 +1066,7 @@ Function to extract clusters using the function `pointsPerQuad`. Takes a `Tracks
     + `threshold`: Threshold (number of points per cell) defining a "cluster".
 
 * Value: 
-    + `SpatialPolygonsDataFrame` holding the cells determined as clusters
+    + A `SpatialPolygonsDataFrame` holding the cells determined as clusters
 
 ```{r extractClusters, eval = T, message = F, warning = F}
 extractClusters <-
@@ -1081,6 +1080,203 @@ extractClusters <-
     clusters <- trsGridSPDF[which(trsGridSPDF$count > threshold), ]
     return(clusters)
   }
+```
+
+## searchNextVisit
+
+Function that checks whether the clusters/campsites have been visited more than the currently known visits (`times_visited`). Updates `times_visited` and determines end (latest point in cell) of current visit. This function is used by function `clusterOrder()`.
+
+* Arguments:
+    + `cells`: A `SpatialPolygonsDataFrame` holding the cells determined as clusters/campsites
+    + `trs_spdf`: A `SpatialPointsDataFrame` of the household movement (as converted from `Tracks` object)
+    
+* Value:
+    + `cells`: A `SpatialPolygonsDataFrame` holding the clusters/campsites with updated `times_visited`
+
+```{r searchNextVisit, eval = T, message = F, warning = F}
+searchNextVisit <- function(cells, trs_spdf) {
+  
+  #get last occurence of points in cell from the cluster data frame
+  last_in_cell <- cells$last_in_cluster 
+  
+  #get the start of current visit from the third last coloumn of data frame
+  first_of_visit <- cells@data[[ncol(cells@data) - 2]] 
+  
+  #get currently determined latest point of current visit, i.e. the second last coloumn
+  last_of_visit <- cells@data[[ncol(cells@data)-1]] 
+  
+  #get the current rank, i.e. the last coloumn
+  current_rank <- cells@data[[ncol(cells@data)]] 
+  
+  #loop through clusters by rank
+  for (i in 1:(max(current_rank, na.rm = T) - 1)) {
+    
+    # if current latest point is later in time than the earliest point of the following cluster...
+    if (last_in_cell[which(current_rank == i)] > first_of_visit[which(current_rank == i +
+                                                                           1)]) {
+      
+      #...the cluster has been visited again later, so set times_visited + 1
+      cells$times_visited[which(current_rank == i)] <-
+        cells$times_visited[which(current_rank == i)] + 1 
+     
+       # also determine end of current visit as the latest point in the cluster that is still earlier than the earliest point in the following cluster
+      last_of_visit[which(current_rank == i)] <-
+        max(na.omit(trs_spdf$time[trs_spdf$clrank == i &
+                                   trs_spdf$time < first_of_visit[which(current_rank == i + 1)]])) 
+      # set newVisit to TRUE
+      cells$newVisit[which(current_rank == i)] <- TRUE
+    }
+    else{
+      #set newVisit to FALSE
+      cells$newVisit[which(current_rank == i)] <- FALSE
+    }
+  }
+  
+  #the cluster which is last in line of 1st visits, always has only one visit
+  cells$newVisit[which(current_rank == max(current_rank, na.rm = T))] <- FALSE 
+  
+  #update end time of current visit (second last coloumn) with newly determined last last_of_visit
+  cells@data[[ncol(cells@data)-1]] <- last_of_visit 
+  
+  
+  return(cells)
+}
+```
+
+## findStarts
+
+Function determining the start date/time of the latest visit in a cluster/campsite if an additional visit has been detected by `searchNextVisit()`. `cells` should be object of clusters/campsites as returned by `searchNextVisit()`. This function is used by function `clusterOrder()`.
+
+* Arguments:
+    + `cells`: A `SpatialPolygonsDataFrame` holding the cells determined as clusters/campsites
+    + `trs_spdf`: A `SpatialPointDataFrame` of the household movement (as converted from `Tracks` object)
+    
+* Value: 
+    + `next_start`: A vector of `POSIXct` objects holding the starts (first points) of the additional visits.
+    
+```{r findStarts, eval = T, message = F, warning = F}
+findStarts <- function(cells, trs_spdf) {
+  #get the end of previous visit from the second last coloumn of data frame
+  last_of_previous <- cells@data[[ncol(cells@data)-1]] 
+  
+  #create POSIXct vector for next start values (using visit1_start as dummy values)
+  next_start <- cells$visit1_start 
+  
+  #get the current rank, i.e. the last coloumn
+  current_rank <- cells@data[[ncol(cells@data)]] 
+  
+  #loop through clusters following rank
+  for (i in 1:(max(current_rank, na.rm = T))) {
+    
+    # if new visit has been detected before:
+    if (cells$newVisit[which(current_rank == i)]  == TRUE) {
+      
+      #determine next_start within cluster as the earliest point that is in that cluster and later than the end of the previous visit
+      next_start[which(current_rank == i)] <- 
+        min(na.omit(trs_spdf$time[trs_spdf$clrank == i &
+                                   trs_spdf$time > last_of_previous[which(current_rank == i)]])) 
+      
+    } else {
+      next_start[which(current_rank == i)] <- NA
+    }
+  } 
+  
+  return(next_start)
+}
+```
+
+## clusterOrder
+
+Function that identifies campsites (clusters of points) of a household (`Tracks` object) and for each cluster/campsite determines the number of visits, the order in which the clusters have been visited, and the start and end times (first and last point) of each visits. Uses function `extractClusters()` to detect the campsites. Also uses functions `searchNextVisit()` and `findStarts()` described above.
+
+* Arguments:
+    + `trs`: A `Tracks`object.
+    + `cellsize`: Desired size of the cells in which to count the points when searching clusters/campsites. Passed on to function `extractClusters()`. 
+    + `threshold`: Threshold (number of points per cell) defining a “cluster”. Passed on to function `extractClusters()`.
+   
+    
+* Value: 
+  + `clusters`: A `SpatialPolygonsDataFrame` holding the cells determined as clusters including data on the number of visits per cluster, start and end times etc.
+  
+```{r clusterOrder, eval = T, message = F, warning = F}
+clusterOrder <- function(trs, cellsize = 800, threshold = 20) {
+  
+##prepare data by extracting clusters and transforming Tracks object to SPDF to allow overlaying with polygons of clusters:
+  clusters <- extractClusters(trs, cellsize = cellsize, threshold = threshold)
+  clusters$clid <- rownames(clusters@data) # save id of cell in dataframe as "clid"
+  trs_spdf <- spTransform(as(trs, "SpatialPointsDataFrame"), CRSobj = clusters@proj4string)
+  trs_spdf@data$clid <- over(trs_spdf, clusters)$clid #assign clid of corresponding cluster to each point
+  
+##begin ordering
+  #detect and rank first visit of each cluster/campsite:
+  
+  #determine first visit for each cluster
+  visit1_start <- aggregate(trs_spdf["time"], by = clusters, FUN = min)$time 
+  
+  # rank cluster regarding first visit
+  visit1_rank <- rank(visit1_start) 
+  
+  #determine latest point of the track within each cluster
+  clusters$last_in_cluster <- aggregate(trs_spdf["time"], by = clusters, FUN = max)$time  
+  
+  #temporarily set end of first visit to the last point in cluster (will be updated during ordering below)
+  visit1_end <- clusters$last_in_cluster 
+  
+  clusters$times_visited <- 1
+  
+  # add start, end and rank of visit to dataframe of the clusters/campsites
+  clusters@data <- cbind(clusters@data, visit1_start, visit1_end, visit1_rank) 
+  remove(visit1_rank, visit1_start, visit1_end)
+  
+  # assign rank of cluster to corresponding points of trs_spdf
+  trs_spdf@data$clrank <- over(trs_spdf, clusters)$visit1_rank 
+  
+  #create vector for holding information on whether a new visit has been detected
+  newVisit <- rep(TRUE, length(clusters$visit1_rank)) 
+  
+  #attach information on new visits to the first coloumn in order to keep the last coloumn for the end of the corresponding visit
+  clusters@data <- cbind(newVisit,clusters@data) 
+  
+  #find furhter visits:
+  
+  i = 2 #index for naming the coloumns
+  
+   #while there were at least two clusters with additional visits to be ordered in the previous iteration, continue. Otherwised ordering is finished
+  while (length(which(clusters$newVisit == TRUE))>1) { 
+    
+    #in each cluster look for visits later than the currently known ones:
+    clusters <- searchNextVisit(clusters, trs_spdf) 
+    
+      #if additional visits were found, find starts and ends of these visits, whereas ends are defined as latest points in each cluster (in the next iteration it will be checked,whether they belong to another visit of the same cluster)
+      if (any(clusters$newVisit == TRUE)) { 
+        clusters@data <-
+        cbind(
+          clusters@data,
+          findStarts(clusters, trs_spdf),
+          aggregate(trs_spdf["time"], by = clusters, FUN = max)$time
+        )
+      
+      #set rows without additional visits to NA
+      clusters@data[[ncol(clusters@data)]][is.na(clusters@data[[ncol(clusters@data)-1]])] <-NA 
+      
+      #rank clusters according to start of current visit and add rank to data frame
+      rank <- rank(clusters@data[[ncol(clusters@data)]]) 
+      rank[which(is.na(clusters@data[[ncol(clusters@data)]]))] <- NA
+      clusters@data <- cbind(clusters@data, rank)
+      
+      #rename coloumns
+      names(clusters@data)[ncol(clusters@data)] <- paste("visit",i,"_rank",sep="")
+      names(clusters@data)[ncol(clusters@data)-1] <- paste("visit",i,"_end",sep="")
+      names(clusters@data)[ncol(clusters@data)-2] <- paste("visit",i,"_start",sep="")
+      i <- i+1
+      }
+  }
+  
+  print("Finished")
+  plot(trs_spdf@data$time, trs_spdf@data$clrank, type = "l")
+  return(clusters)
+}
+
 ```
 
 ## elevDiff
