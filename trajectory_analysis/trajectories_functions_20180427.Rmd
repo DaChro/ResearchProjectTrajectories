@@ -1311,6 +1311,8 @@ exDataTracks <- function(trs
     df1 <- merge(df1, df[[i]], all = T)
   }
   
+  df1 <- df1[order(df1$time),]
+  
   return(df1)
 }
 ```
@@ -1325,14 +1327,14 @@ Function in order to identify distinct locations in a `Tracks` object and the or
     + `t.min`: The minimum residence time at a specific location [s] which is used to classify locations as campsites (if the residence time is larger than `t.min`) in contrast to other locations. The default is `t.min = 345600`, i.e. 4 days.
 
 * Value: 
-    + `data.frame` containing the following columns:
+    + A `Tracks` object containing the following columns within the data slot:
         1. `location`: An integer value discriminating different locations.
         2. `res.time`: The residence time at a specific location [s].
         3. `campsite`: A logical value indicating whether a specific visit of a location is considered as campsite or not (based on `t.min`).
         4. `arrival.time`: A character representing the arrival time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`.
         5. `departure.time`: A character representing the departure time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`.
-        6. `lat`: A numeric value representing the centroids for the latitude of fixes corresponding to a specific visit of a location [Â°].
-        7. `lon`: A numeric value representing the centroids for the longitude of fixes corresponding to a specific visit of a location [Â°].
+        6. `lat`: A numeric value representing the centroids for the latitude of fixes corresponding to a specific visit of a location [°].
+        7. `lon`: A numeric value representing the centroids for the longitude of fixes corresponding to a specific visit of a location [°].
         8. `alt`: A numeric value representing the mean elevation value of fixes corresponding to a specific visit of a location [m].
         9. `speed`: A numeric value indicating the mean speed at the time fixes were taken for fixes corresponding to a specific visit of a location [m s<sup>-1</sup>].
 
@@ -1355,19 +1357,18 @@ locationsTracks <- function(trs,
         "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
       )
     )
-  trsSP <- SpatialPointsDataFrame(trsSP, trs.df)
+  trsSP <- SpatialPointsDataFrame(trsSP, trs.df, match.ID = F)
   
   # indices with points that have not been assigned to a cluster yet
   leftover <- c(1:length(trsSP))
   leftover.old <- leftover
-  
-  # param for first run
-  first = T
+  first <- T
   
   while(length(leftover) != 0){
     
-    # subset points for buffering
-    ind.select <- leftover[seq(1, length(leftover), by = length(leftover)*0.01)]
+    # subset points for buffering (1%)
+    # ind.select <- leftover[seq(1, length(leftover), by = length(leftover)*0.01)]
+    ind.select <- leftover[sample(c(1:length(leftover)), size = ceiling(length(leftover)*0.01))]
     
     # compute buffer
     buffer.trs <- gBuffer(trsSP[ind.select,], width = radius, quadsegs = 25)
@@ -1377,26 +1378,25 @@ locationsTracks <- function(trs,
     
     if(first == T){
       # get intersecting points
+      buffer.trs.tot <- buffer.trs
       a.tot <- a.new
       
       first = F
     }
     
-    # adjust indices of intersecting points
-    ind.sub1 <- unique(a.new[which(is.na(a.tot) == F & is.na(a.new) == F)])
-    ind.sub2 <- unique(a.tot[which(is.na(a.tot) == F & is.na(a.new) == F)])
-    for(i in c(1:length(ind.sub1))){
-      a.new[which(a.new == ind.sub1[i])] <- ind.sub2[i] 
-    }
+    # define points that were inside a buffer at any loop run
+    a.tot[which(is.na(a.tot))] <- a.new[which(is.na(a.tot))]
     
-    # merge a.tot and a.new
-    a.tot[which((is.na(a.tot) == F & is.na(a.new) == F)|(is.na(a.tot) & is.na(a.new) == F))] <- a.new[which((is.na(a.tot) == F & is.na(a.new) == F)|(is.na(a.tot) & is.na(a.new) == F))]
+    # define total buffer range
+    buffer.trs.tot <- gUnion(buffer.trs, buffer.trs.tot)
     
     # subset leftover
     if(length(which(is.na(a.tot))) != 0){
       leftover <- leftover.old[which(is.na(a.tot))]
     }else{
       leftover = NULL
+      
+      a.tot <- over(trsSP, disaggregate(buffer.trs.tot))
     }
     
   }
@@ -1422,7 +1422,7 @@ locationsTracks <- function(trs,
   
   # create a list with respective indices
   order.campsite.vis <- rbind(order.campsite.vis[-length(order.campsite.vis)], order.campsite.vis[-1])
-  order.campsite.vis <- list(apply(order.campsite.vis, 2, function(x){x[1]:x[2]}))[[1]]
+  order.campsite.vis <- list(apply(order.campsite.vis, 2, function(x){x[1]:(x[2]-1)}))[[1]]
   
   # calculate various variables connected to campsites
   campsites.var <- data.frame(location = trsSP$campsites[sapply(order.campsite.vis, function(x){x[1]})],
@@ -1440,7 +1440,7 @@ locationsTracks <- function(trs,
   centr.coords <- data.frame()
   for(visit_i in c(1:length(order.campsite.vis))){
     
-    centr.coords <- rbind(centr.coords, apply(trsSP@coords[order.campsite.vis[[visit_i]],], 2 ,mean))
+    centr.coords <- rbind(centr.coords, apply(matrix(trsSP@coords[order.campsite.vis[[visit_i]],], ncol = 2), 2 , mean))
     
   }
   centr.coords$alt <- sapply(order.campsite.vis, function(x){mean(trsSP$HEIGHT[x])})
@@ -1460,6 +1460,21 @@ locationsTracks <- function(trs,
   # get mean speed at each location visit
   campsites.var$speed <- sapply(order.campsite.vis, function(x){mean(trsSP$SPEED[x])})
   
+  # reorder indices of locations (according to arrival time)
+  done <- NULL
+  iter <- 1
+  location.new <- rep(0, nrow(campsites.var))
+  for(i in c(1:nrow(campsites.var))){
+    if(i %in% done){
+      next()
+    }else{
+      done <- c(done, which(campsites.var$location == campsites.var$location[i]))
+    location.new[which(campsites.var$location == campsites.var$location[i])] <- iter
+    iter <- iter+1
+    }
+  }
+  campsites.var$location <- location.new
+  
   # create SpatialPointsDataFrame from campsites.var
   campsites.var1 <- campsites.var
   campsites.var <- SpatialPoints(coords = data.frame(lon = campsites.var$lon, lat = campsites.var$lat), proj4string = CRS(
@@ -1473,11 +1488,34 @@ locationsTracks <- function(trs,
       )
     )
   
+
+  
   # create Track object from campsites.var
   campsites.var <- Track(STIDF(sp = campsites.var, time = as.POSIXct(campsites.var1$arrival.time) , data = campsites.var1, endTime = as.POSIXct(campsites.var1$departure.time)))
   
   return(campsites.var)
 }
+```
+
+## summaryIndicators1
+
+Function in order to compute various summary indicators for the movement of herders, solely based on a `Tracks` object. The function uses the output of the function `locationsTracks` (i.e. is based on a `Tracks` object). Therefore, movement summary indicators are solely based on identified locations, i.e. distances represent the linear distances between the locations.  
+
+* Arguments:
+    + `trsloc`: A `Tracks`object as returned by `locationsTracks`.
+    + `time`: A `POSIXct` vector of length two specifying a target time interval for which to compute the summary indicators. `time[1]` represents the start time point, `time[2]` represents the start time point. All locations with `loctrs$arrival.time >= time[1]` and `loctrs$departure.time <= time[2]` will be considered. If `time = NULL`, no temporal subsetting of the data is performed. Default is `time = NULL`.
+    + `only.campsites`: A logical value indicating if during the computation of the summary indicators only campsites (`only.campsites = T`) or all identified locations (`only.campsites = F`) should be considered. Default is `only.campsites = T`.
+
+* Value: 
+    + `data.frame` containing the following columns:
+        1. 
+     
+* Issues:
+    + The function will be extended for the use with outputs from `extractClusters`.
+
+
+```{r summaryIndicators1, eval = T, message = F, warning = F}
+summaryIndicators1 <- function(){}
 ```
 
 ## FixesForDays
@@ -1556,7 +1594,7 @@ FixesForDaysTrColl <- function(trscoll,
   # setup cluster
   cl <- makeCluster(cores, outfile="", type = "PSOCK")
   registerDoParallel(cl)
-  clusterExport(cl = cl, varlist = list("exDataTracks", "FixesForDays"), envir=environment())
+  clusterExport(cl = cl, varlist = list("exDataTracks", "FixesForDays", "trscoll"), envir=environment())
   
   fix.pres <- parLapply(cl, trscoll@tracksCollection, fun = function(x){FixesForDays(trs = x, time)})
  
