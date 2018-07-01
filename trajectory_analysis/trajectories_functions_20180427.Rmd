@@ -1600,6 +1600,122 @@ summaryIndicators1 <- function(trsloc, time = NULL, drought.r = NULL, dzud.r = N
   # maximum distance between adjacent campsites
   dist.max.tot <- max(distances.campsites)
   
+  # merge results in a list
+  list.summary <- list(
+    distance.tot = distance.tot,
+    alt.tot = alt.tot,
+    campsites.time.tot = campsites.time.tot,
+    nocampsites.time.tot = nocampsites.time.tot,
+    no.campsites.tot = no.campsites.tot,
+    no.repeated.visits.tot = no.repeated.visits.tot,
+    dist.max.tot = dist.max.tot
+    
+  )
+  
+  # return result
+  return(list.summary)
+  
+}
+```
+
+## summaryIndicators2
+
+Function in order to compute various summary indicators for the movement of herders, based on a `Tracks` object and different `RasterBrick` or `RasterStack` objects from which values are extracted. The function uses the output of the function `locationsTracks` (i.e. is based on a `Tracks` object). Therefore, movement summary indicators are solely based on identified locations, i.e. distances represent the linear distances between the locations.  
+
+* Arguments:
+    + `trsloc`: A `Tracks`object (as returned by `locationsTracks`).
+    + `time`: A `POSIXct` vector of length two specifying a target time interval for which to compute the summary indicators. `time[1]` represents the start time point, `time[2]` represents the end time point. All locations with `trsloc$departure.time >= time[1]` and `trsloc$arrival.time <= time[2]` will be considered. If `time = NULL`, no temporal subsetting of the data is performed. Default is `time = NULL`.
+    + `drought.r`: A `RasterStack` or `Rasterbrick` object with information on drought conditions (more details have to be provided if the function to evaluate drought conditions is finished and tested). If not provided (i.e. `drought.r = NULL`), no summary indicators related to drought conditions will be computed. Default is `drought.r = NULL`.
+    + `dzud.r`: A `RasterStack` or `Rasterbrick` object with information on dzud conditions (more details have to be provided if the function to evaluate drought conditions is finished and tested). If not provided (i.e. `dzud.r = NULL`), no summary indicators related to drought conditions will be computed. Default is `dzud.r = NULL`.
+    + `landcover`: A `SpatialPointsDataFrame` object with information on the landcover type. If not provided (i.e. `landcover = NULL`), no summary indicators related to drought conditions will be computed. Default is `landcover = NULL`.
+    + `ndvi.r`: A `RasterStack` or `Rasterbrick` object with information on dzud conditions (more details have to be provided if the function to evaluate drought conditions is finished and tested). If not provided (i.e. `ndvi.r = NULL`), no summary indicators related to drought conditions will be computed. Default is `ndvi.r = NULL`.
+    + `dgm.r`: A `RasterStack` or `Rasterbrick` object with information on the landscape elevation (digital ground model). If not provided (i.e. `dgm.r = NULL`), elevation differences will be computed as difference between the altitude of two adjacent campsite locations. Default is `dgm.r = NULL`. (Currently not supported because it is unclear if distances based on linear distances between adjacent fixes are more precise than linear distances between campsites).
+
+* Value: 
+    + `list` containing the following elements:
+        1. `distance.tot`: A numeric value indicating the total linear distance [m] between adjacent camspites. 
+       
+     
+* Issues:
+    + The function will be extended for the use with outputs from `extractClusters`.
+
+
+```{r summaryIndicators2, eval = T, message = F, warning = F}
+summaryIndicators2 <- function(trsloc, time = NULL, drought.r = NULL, dzud.r = NULL, landcover = NULL, ndvi.r = NULL, dgm.r = NULL){
+  
+  # load packages
+  
+  ## extract data (no additional steps are required to adapt different data structures to the function)
+  
+  # get ids of campsites
+  id <- trsloc@data$location
+  
+  # get longitude of campsites
+  lon <- trsloc@data$lon
+
+  # get latitude of campsites
+  lat <- trsloc@data$lat
+  
+  # get altitude of campsites
+  alt <- trsloc@data$alt
+  
+  # get arrival time at campsites
+  arrival.time <- as.POSIXct(trsloc@data$arrival.time)
+  
+  # get departure time from campsites
+  departure.time <- as.POSIXct(trsloc@data$departure.time)
+  
+  # get residence time within campsites [s]
+  residence.time <- trsloc@data$res.time
+  
+  # get distances between campsites
+  distances.campsites <- trsloc@connections$distance
+  
+  # merge data in a dataframe
+  df <- data.frame(id = id, lon = lon, lat = lat, alt = alt, arrival.time = arrival.time, departure.time = departure.time, residence.time = residence.time)
+  
+  
+  # (optionally) subset time window to consider
+  if(is.null(time) == F){
+    
+    # define index to subset the data
+    subset.time <- which(difftime(df$departure.time, time[1]) >= 0 & difftime(df$arrival.time, time[2]) <= 0)
+    
+    # subset the data
+    df <- df[subset.time,]
+    distances.campsites <- distances.campsites[subset.time[which(subset.time <= length(distances.campsites))]]
+  }else{
+    time <- c(df$arrival.time[1], df$departure.time[nrow(df)])
+  }
+  
+  
+  ## summary indicators
+  
+  # total distance covered
+  distance.tot <- sum(distances.campsites)  
+  
+  # total elevation covered
+  if(is.null(dgm.r)){
+    alt.tot <- sum(df$alt) 
+  }else{
+    
+  }
+  
+  # total time spend within campsites
+  campsites.time.tot <- sum(as.numeric(difftime(df$departure.time[1], time[1], units = "secs")), df$residence.time[2:(nrow(df)-1)], as.numeric(difftime(df$arrival.time[nrow(df)], time[2], units = "secs")))
+  
+  # total time spend not in campsites
+  nocampsites.time.tot <- as.numeric(difftime(time[2], time[1], units = "secs")) - campsites.time.tot
+  
+  # total number of different campsites
+  no.campsites.tot <- length(unique(df$id))
+   
+  # get the total number of repeated visits
+  no.repeated.visits.tot <- length(which(duplicated(df$id) == T))
+  
+  # maximum distance between adjacent campsites
+  dist.max.tot <- max(distances.campsites)
+  
   # drought related indicators
   if(is.null(drought.r) == F){
     
@@ -1959,50 +2075,20 @@ reorganizeTracks <- function(tracks, interval = 60*30, tz = "GMT", cores = 1, cl
 }
 ```
 
+## TrackToSpatialPointsDataFrame
 
-## locationsTracks
-
-Function in order to identify distinct locations in a `Tracks` object and the order of the visit of these locations and in order to compute various variables concerning the visit of a specific location (mean latitude, mean longitude, mean elevation, residence time, arrival time, departure time, speed, number of visits at location i). The identification of locations is based on the identification of clusters of fixes by identifying intersecting buffers around each fix. Campsites are distinguished from other locations by a specified minimal residence time. In contrast to the function above, this function handles `Track` objects that have an extra boolean column `gap` in the slot `data` indicating missing data values along a regular spaced time vector.
+Function in order to convert a `Track` object into a `SpatialPointsDataFrame` object and transform respective longitude latitude values to UTM (zone 46). Internal function used by `locationsTracks2`. The function assumes longitude latitude values 
 
 * Arguments:
     + `trs`: A `Track`object.
-    + `radius`: The radius of the buffers computed around each value [m] which are used for clustering values to locations. Default is `radius = 200` [m].
-    + `t.min`: The minimum residence time at a specific location [s] which is used to classify locations as campsites (if the residence time is larger than `t.min`) in contrast to other locations. The default is `t.min = 345600`, i.e. 4 days.
-    + `return_summary`: A logical value indicating if data points of `trs` should be collapsed by visits and locations (i.e. one data point per visit and location) (`return_summary = T`) or if all data points of `trs` should just be assigned to a location, a visit and classified as campsite or not (`return_summary = F`). Default is `return_summary = T`.
-    + `remove_gaps`: A logical value indicating if all visits representing gaps should be removed in the output. Its effect depends on the value of `merge_inter_gaps`. If `return_summary = F`, `remove_gaps` will be ignored. Default is `remove_gaps = T`. 
-    + `merge_inter_gaps`: A logical value indicating if adjacent visits at the same location should be merged as one visit if there is a gap between them (`merge_inter_gaps = T`) or not (`merge_inter_gaps = F`). If `return_summary = F` or `remove_gaps = F`, `merge_inter_gaps` will be ignored. Default is `merge_inter_gaps = T`
+    
 
 * Value: 
-    + A `Tracks` object containing the following columns within the data slot:
-        1. `location`: An integer value discriminating different locations.
-        2. `visits`: An integer vector indicating the number of visit at a specific location (indicated by `location`) the data point is assigned to (i.e. counter for the visits at a location).
-        2. `res.time`: The residence time at a specific location [s], only if `return_summary = T`.
-        3. `campsite`: A logical value indicating whether a specific visit of a location is considered as campsite or not (based on `t.min`).
-        4. `arrival.time`: A character representing the arrival time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`, only if `return_summary = T`..
-        5. `departure.time`: A character representing the departure time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`, only if `return_summary = T`..
-        6. `lat`: A numeric value representing the centroids for the latitude of fixes corresponding to a specific visit of a location [°].
-        7. `lon`: A numeric value representing the centroids for the longitude of fixes corresponding to a specific visit of a location [°].
-        8. `alt`: A numeric value representing the mean elevation value of fixes corresponding to a specific visit of a location [m].
-        9. `speed`: A numeric value indicating the mean speed at the time fixes were taken for fixes corresponding to a specific visit of a location [m s<sup>-1</sup>].
+    + A `SpatialPointsDataFrame` object containing the information of the slot `sp` and `data` of the corresponding `Track` object. 
 
-
-```{r locationsTracks2, eval = T, message = F, warning = F}
-locationsTracks <- function(trs,
-                            radius = 200,
-                            t.min = 345600,
-                            return_summary = T,
-                            remove_gaps = T,
-                            merge_inter_gaps = T
+```{r TrackToSpatialPointsDataFrame, eval = T, message = F, warning = F}
+TrackToSpatialPointsDataFrame <- function(trs
 ){
-  
-  # subset data if specified (if a summary is created and gaps are removed and adjacent visits at the same lication are merged)
-  if(return_summary == T && remove_gaps == T && merge_inter_gaps == T){
-    trs.data <- trs@data[which(trs@data$gap == F),]
-    trs.sp <- as(as(trs, "SpatialLines"), "SpatialPoints")[which(trs@data$gap == F)]
-    trs.time <- trs@time[which(trs@data$gap ==F)]
-    trs.endtime <- trs@endTime[which(trs@data$gap == F)]
-    trs <- Track(STIDF(sp = trs.sp, time = trs.time , data = trs.data, endTime = trs.endtime))
-  }
   
   # get Tracks data
   trs.df <- trs@data
@@ -2018,7 +2104,28 @@ locationsTracks <- function(trs,
     )
   trsSP <- SpatialPointsDataFrame(trsSP, trs.df, match.ID = F)
   
-  # indices with points that have not been assigned to a cluster yet
+  # return result
+  return(trsSP)
+  
+}
+```
+
+## extractClustersBuffer
+
+Function in order to cluster the points of a `SpatialPoints` object based on their intersection with buffers constructed around the points. Internal function used by `locationsTracks2`.
+
+* Arguments:
+    + `trsSP`: A `SpatialPointsDataFrame`object representing a `Track` object, i.e. the result of the function `TrackToSpatialPointsDataFrame`.
+    + `radius`: The radius of the buffers computed around each value [m] which are used for clustering values to locations. Default is `radius = 200` [m].
+
+* Value: 
+    + An `integer` vector with the same length as the number of points in `trsSP` indicating to which cluster each point is assigned. Cluster indices are not ordered, however points of `trsSP` representing gaps (as indicated by `trsSP@data$gap`) obtain the cluster index `0`.
+
+```{r extractClustersBuffer, eval = T, message = F, warning = F}
+extractClustersBuffer <- function(trsSP, radius = 200
+){
+  
+   # indices with points that have not been assigned to a cluster yet
   leftover <- c(1:length(trsSP))
   leftover.old <- leftover
   first <- T
@@ -2061,7 +2168,65 @@ locationsTracks <- function(trs,
   }
   
   # set location of gaps to 0
-  a.tot[which(trs.df$gap == T)] <- 0
+  a.tot[which(trsSP@data$gap == T)] <- 0
+  
+  # return result
+  return(a.tot)
+  
+}
+```
+
+## locationsTracks2
+
+Function in order to identify distinct locations in a `Tracks` object and the order of the visit of these locations and in order to compute various variables concerning the visit of a specific location (mean latitude, mean longitude, mean elevation, residence time, arrival time, departure time, speed, number of visits at location i). The identification of locations is based on the identification of clusters of fixes by identifying intersecting buffers around each fix. Campsites are distinguished from other locations by a specified minimal residence time. In contrast to the function above, this function handles `Track` objects that have an extra boolean column `gap` in the slot `data` indicating missing data values along a regular spaced time vector.
+
+* Arguments:
+    + `trs`: A `Track`object.
+    + `radius`: The radius of the buffers computed around each value [m] which are used for clustering values to locations. Default is `radius = 200` [m].
+    + `t.min`: The minimum residence time at a specific location [s] which is used to classify locations as campsites (if the residence time is larger than `t.min`) in contrast to other locations. The default is `t.min = 345600`, i.e. 4 days.
+    + `return_summary`: A logical value indicating if data points of `trs` should be collapsed by visits and locations (i.e. one data point per visit and location) (`return_summary = T`) or if all data points of `trs` should just be assigned to a location, a visit and classified as campsite or not (`return_summary = F`). Default is `return_summary = T`.
+    + `remove_gaps`: A logical value indicating if all visits representing gaps should be removed in the output. Its effect depends on the value of `merge_inter_gaps`. If `return_summary = F`, `remove_gaps` will be ignored. Default is `remove_gaps = T`. 
+    + `merge_inter_gaps`: A logical value indicating if adjacent visits at the same location should be merged as one visit if there is a gap between them (`merge_inter_gaps = T`) or not (`merge_inter_gaps = F`). If `return_summary = F` or `remove_gaps = F`, `merge_inter_gaps` will be ignored. Default is `merge_inter_gaps = T`
+    + `merge_campsites`: A logical value indicating if visits not representing campsites should be dropped, i.e. only visits representing campsites should be considered. If `merge_campsites = T`, visits which are no campsites are deleted and visits at the same location which are campsites and now are adjacent, are merged. Default is `merge_campsites = T`. `merge_campsites` will be ignored if `return_summary = F` and `merge_inter_gaps = F` and `remove_gaps = F`
+
+* Value: 
+    + A `Tracks` object containing the following columns within the data slot:
+        1. `location`: An integer value discriminating different locations.
+        2. `visits`: An integer vector indicating the number of visit at a specific location (indicated by `location`) the data point is assigned to (i.e. counter for the visits at a location).
+        2. `res.time`: The residence time at a specific location [s], only if `return_summary = T`.
+        3. `campsite`: A logical value indicating whether a specific visit of a location is considered as campsite or not (based on `t.min`).
+        4. `arrival.time`: A character representing the arrival time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`, only if `return_summary = T`..
+        5. `departure.time`: A character representing the departure time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`, only if `return_summary = T`..
+        6. `lat`: A numeric value representing the centroids for the latitude of fixes corresponding to a specific visit of a location [°].
+        7. `lon`: A numeric value representing the centroids for the longitude of fixes corresponding to a specific visit of a location [°].
+        8. `alt`: A numeric value representing the mean elevation value of fixes corresponding to a specific visit of a location [m].
+        9. `speed`: A numeric value indicating the mean speed at the time fixes were taken for fixes corresponding to a specific visit of a location [m s<sup>-1</sup>].
+
+
+```{r locationsTracks2, eval = T, message = F, warning = F}
+locationsTracks2 <- function(trs,
+                            radius = 200,
+                            t.min = 345600,
+                            return_summary = T,
+                            remove_gaps = T,
+                            merge_inter_gaps = T,
+                            merge_campsites = T
+){
+  
+  # subset data if specified (if a summary is created and gaps are removed and adjacent visits at the same lication are merged)
+  if(return_summary == T && remove_gaps == T && merge_inter_gaps == T){
+    trs.data <- trs@data[which(trs@data$gap == F),]
+    trs.sp <- as(as(trs, "SpatialLines"), "SpatialPoints")[which(trs@data$gap == F)]
+    trs.time <- trs@time[which(trs@data$gap ==F)]
+    trs.endtime <- trs@endTime[which(trs@data$gap == F)]
+    trs <- Track(STIDF(sp = trs.sp, time = trs.time , data = trs.data, endTime = trs.endtime))
+  }
+  
+  # convert track to SpatialPointsDataFrame and transform to UTM
+  trsSP <- TrackToSpatialPointsDataFrame(trs)
+  
+  # cluster the data points
+  a.tot <- extractClustersBuffer(trsSP, radius)
   
   # add variable to trsSP
   trsSP$campsites <- a.tot
@@ -2082,35 +2247,82 @@ locationsTracks <- function(trs,
     }
   }
   
-  # create a list with respective indices
+  # create a matrix with start and end indices of each visit
   order.campsite.vis <- rbind(order.campsite.vis[-length(order.campsite.vis)], order.campsite.vis[-1])
+  
+  # create a list with respective indices
   order.campsite.vis <- list(apply(order.campsite.vis, 2, function(x){x[1]:(x[2]-1)}))[[1]]
+    
+  # remove non-campsites locations and merge campsites (optionally)
+  if(return_summary == T && merge_campsites == T && remove_gaps == T && merge_inter_gaps == T){
+    
+    # define a new list to store the reduced information in
+    order.campsite.vis1 <- list()
+    
+    # remove visits with a duration < t.min
+    order.campsite.vis <- order.campsite.vis[-which(sapply(order.campsite.vis, function(x){difftime(trsSP$time[range(x)[2]], trsSP$time[range(x)[1]], units = "sec")}) < t.min)]
+    
+    # assign location ids to each visit
+    loc.ids.visits <- sapply(order.campsite.vis, function(x){unique(a.tot[x])})
+    
+    # merge adjacent visits at the same location
+    done <- NULL
+    for(location_i in seq_along(loc.ids.visits)){
+      if(location_i %in% done){next}
+      done <- c(done, location_i)
+      new.visit <- NULL
+      continue <- T
+      iter <- 1
+      while(continue == T){
+        if(loc.ids.visits[location_i + iter] == loc.ids.visits[location_i] && location_i != length(loc.ids.visits)){
+          new.visit <- c(new.visit, order.campsite.vis[[location_i + iter]])
+          done <- c(done, location_i+iter)
+          iter <- iter+1
+        }else{
+          continue <- F
+        }
+      }
+      if(is.null(new.visit) == F){
+        order.campsite.vis1 <- c(order.campsite.vis1, list(new.visit))
+      }
+      
+    }
+    
+    order.campsite.vis <- order.campsite.vis1
+    
+  }
   
-  # calculate various variables connected to campsites
-  campsites.var <- data.frame(location = trsSP$campsites[sapply(order.campsite.vis, function(x){x[1]})],
-                              res.time = sapply(order.campsite.vis, function(x){difftime(trsSP$time[range(x)[2]], trsSP$time[range(x)[1]], units = "sec")}))
+  # define a dataframe to store the results in (with the location id of each visit)
+  campsites.var <- data.frame(location = trsSP$campsites[sapply(order.campsite.vis, function(x){x[1]})])
+   
+  # duration of each visit
+  campsites.var$res.time = sapply(order.campsite.vis, function(x){difftime(trsSP$time[range(x)[2]], trsSP$time[range(x)[1]], units = "sec")})
   
-  # define a variable classifying locations as campsites or short term visits
+  # classify visits as campsites or short term visits
   campsites.var$campsite <- rep(T, nrow(campsites.var))
   campsites.var$campsite[which(campsites.var$res.time < t.min)] <- F
   
-  # get arrival and departure time
+  # arrival and departure time
   campsites.var$arrival.time <- sapply(order.campsite.vis, function(x){as.character(trsSP$time[x[1]])})
   campsites.var$departure.time <- sapply(order.campsite.vis, function(x){as.character(trsSP$time[x[length(x)]])})
+  
+  # arrival and departure time as row indices
   campsites.var$arrival.time1 <- sapply(order.campsite.vis, function(x){range(x)[1]})
   campsites.var$departure.time1 <- sapply(order.campsite.vis, function(x){range(x)[2]})
   
-  # define number of visits per location
+  # remove gaps (optionally)
+  if(return_summary == T && remove_gaps == T && merge_inter_gaps == F && length(which(campsites.var$location == 0)) > 0){
+    campsites.var <- campsites.var[-which(campsites.var$location == 0),]
+  }
+  
+  # number of visits per location
   visits <- rep(NA, nrow(campsites.var))
-  for(loc_i in seq_along(names(table(campsites.var$location)))){
+  for(loc_i in unique(campsites.var$location)){
     
     visits[which(campsites.var$location == loc_i)] <- seq(from = 1, to = length(which(campsites.var$location == loc_i)))
     
   }
   campsites.var$visits <- visits
-  
-  # set visits of gaps to NA
-  campsites.var$visits[which(campsites.var$location == 0)] <- NA
   
   # set campsite of gaps to NA
   campsites.var$campsite[which(campsites.var$location == 0)] <- NA
@@ -2160,7 +2372,6 @@ locationsTracks <- function(trs,
   # replace trs@data by new values
   trs@data <- trs.df
   
-  # optionally start
   # get mean position data for each location visit
   centr.coords <- data.frame()
   for(visit_i in c(1:length(order.campsite.vis))){
@@ -2198,15 +2409,8 @@ locationsTracks <- function(trs,
       )
     )
   
-  if(return_summary == T && remove_gaps == T && merge_inter_gaps == F){
-    campsites.var <- campsites.var[-which(is.na(campsites.var1$visits)),]
-    campsites.var1 <- campsites.var1[-which(is.na(campsites.var1$visits)),]
-  }
-  
   # create Track object from campsites.var
   campsites.var <- Track(STIDF(sp = campsites.var, time = as.POSIXct(campsites.var1$arrival.time) , data = campsites.var1, endTime = as.POSIXct(campsites.var1$departure.time)))
-  
-  # optionally end
   
   if(return_summary == T){
     return(campsites.var)
