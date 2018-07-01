@@ -212,6 +212,47 @@ tenDayMean <- function(variable, month, interval, year = NA, layers = FALSE){
 }
 ```
 
+## tenDaySD
+
+Function in order to get the standard deviation of the 1st, 2nd, or 3rd 10 day interval of the specified variable and month.
+
+* The function uses <a href="#tenDayStack">tenDayStack</a> to create a raster stack of the 1st 2nd or 3rd ten of these indices and then computes the standard deviation of that stack.
+
+* if `year` is not provided, the first year in the provided dataset will be used by the nested function tenDayDayStack.
+
+* if `layers` is TRUE, the single layers of the corresponding interval are returned, all with the standard deviation for the interval (to facilitate comparison with daywise data).
+
+* Arguments:
+    + `variable`: RasterStack object
+    + `month`: target month (integer)
+    + `interval`: index of the 10 day interval of the corresponding month (1, 2 or 3)
+    + `year`: target year (integer) or `NA` (first year of `variable`)
+    + `layers`: should the standard deviation values be exportet as one raster (`layers = F`) or replicated as raster stack of the length of the 10 days interval (`layers = T`)?
+
+```{r tenDaySD, eval = T}
+tenDaySD <- function(variable, month, interval, year = NA, layers = FALSE){
+  
+  tendays <- tenDayStack(variable, month, interval, year)
+  tendaysd <- sd(tendays)
+  
+  if (layers == FALSE){
+    
+   return(tendaysd)
+    
+  }else{
+    
+    for (i in 1:nlayers(tendays)){
+      tendays[[i]] <- tendaysd
+    }
+    
+   return(tendays)
+    
+  }
+   
+}
+```
+
+
 ## timeZoneConvert
 
 Function that converts the time zone of the dates of a netcdf file downloaded from ERA INTERIM (time zone: UTC) to any other time zone (default: "Asia/Ulan_Bator").
@@ -219,6 +260,9 @@ Function that converts the time zone of the dates of a netcdf file downloaded fr
 * Arguments:
     + `variable`: RasterStack object as downloaded from ERA INTERIM.
     + `timezone`: character giving the target time zone, as defined in `OlsonNames()`.
+    
+* Value:
+    + `RasterStack` with the `z` slot containing the temporal information converted to the timezone specified by `timezone`.
 
 ```{r timeZoneConvert, eval = T}
 # function to convert time data from UTC to any target time zone for netcdf data of ERA INTERIM
@@ -240,13 +284,45 @@ timeZoneConvert <- function(variable, timezone = "Asia/Ulan_Bator"){
 }
 ```
 
+## timeZoneConvert1
+
+Function that converts the time zone of a `character` vector (time zone: UTC) convertable to a `POSIXct` object to any other time zone (default: "Asia/Ulan_Bator").
+
+* Arguments:
+    + `variable`: `character` vector (time zone: UTC) convertable to a `POSIXct` object.
+    + `timezone`: character giving the target time zone, as defined in `OlsonNames()`.
+    
+* Value:
+    + `POSIXct` vector with values corresponding to `timezone`.
+
+```{r timeZoneConvert1, eval = T}
+# function to convert time data from UTC to any target time zone for netcdf data of ERA INTERIM
+timeZoneConvert1 <- function(variable, timezone = "Asia/Ulan_Bator"){
+  
+  z <- as.character(format(as.POSIXct(variable, tz = "UTC"), tz = timezone, usetz = F))
+
+  # return result
+  return(z)
+  
+}
+```
+
 ## dailyExtreme
-Function that computes a RasterStack containing the daily minimum values of a variable with several rasters per day. The function supports netcdf files downloaded from ERA INTERIM and implements the [instruction](https://software.ecmwf.int/wiki/display/CKB/How+to+get+daily+temperature+max%2C+min+and+mean+from+ERA-Interim) for calculating daily minimum and maximum temperatures from the data provided by ERA INTERIM.
+Function that computes a RasterStack containing the daily minimum/maximum values of a variable with several rasters per day. The function supports netcdf files downloaded from ERA INTERIM and implements the [instruction](https://software.ecmwf.int/wiki/display/CKB/How+to+get+daily+temperature+max%2C+min+and+mean+from+ERA-Interim) for calculating daily minimum and maximum temperatures from the data provided by ERA INTERIM.
 
 * Arguments:
     + `variable`: RasterStack object as downloaded from ERA INTERIM.
     + `min`: a logical value indicating whether the daily minima should be calculated (`min = T`) or the daily maxima (`min = F`).
     + `cores`: an integer indicating the number of cores to be used in parallel computing. The default is `cores = 1`.
+    + `timedate`: A `POSIXct` vector containing the temporal information for each band/layer of `variable`.
+    
+* Value:
+    + a `list` containing:
+        1. a `RasterBrick` object with the respective daily extreme values.
+        2. a `character` vector with the new temporal information (i.e. days).
+        
+* Issues:
+    + not tested yet.
 
 ```{r dailyExtreme, eval = T}
 dailyExtreme <- function(variable, min = T, cores = 1){
@@ -265,21 +341,21 @@ dailyExtreme <- function(variable, min = T, cores = 1){
     .libPaths()})
   
   # get days of variable
-  days <- unique(strftime(as.POSIXct(variable@z[[1]]), "%Y-%m-%d"))
+  days <- unique(strftime(timedate, "%Y-%m-%d"))
   
   # get raster stack with daily extreme values
   extreme.stack <- 
-    foreach(day_i = c(1:length(unique(strftime(as.POSIXct(variable@z[[1]]), "%Y-%m-%d")))), .combine = stack, .packages = "raster") %dopar% {
+    foreach(day_i = c(1:length(unique(strftime(timedate, "%Y-%m-%d")))), .combine = stack, .packages = "raster") %dopar% {
     
     if(min == T){
       
       # get raster with minima for the current day
-      r.ext <- min(variable[[which(strftime(as.POSIXct(variable@z[[1]]), "%Y-%m-%d") == days[day_i])]])
+      r.ext <- min(variable[[which(strftime(timedate, "%Y-%m-%d") == days[day_i])]])
       
     }else if(min == F){
       
       # get raster with minima for the current day
-      r.ext <- max(variable[[which(strftime(as.POSIXct(variable@z[[1]]), "%Y-%m-%d") == days[day_i])]])
+      r.ext <- max(variable[[which(strftime(timedate, "%Y-%m-%d") == days[day_i])]])
       
     }
     
@@ -288,13 +364,13 @@ dailyExtreme <- function(variable, min = T, cores = 1){
       
   }
   
-  # define z slot of the extreme.stack
-  extreme.stack@z[[1]] <- days
+  # convert to RasterBrick
+  extreme.stack <- brick(extreme.stack)
   
   # stop cluster
   stopCluster(cl)
   
-  return(extreme.stack)
+  return(list(extreme.stack, days))
   
 }
 ```
@@ -388,6 +464,95 @@ tendstack <- stack(tendstack, tenDayMean(variable = variable, month = month_i, i
 }
 ```
 
+## intervalSD
+
+Function in order to calculate the standard deviation for (a specific 10 day interval of) a specific month for a specific year interval.
+
+* Arguments:
+    + `variable`: RasterStack object as downloaded from ERA INTERIM.
+    + `month`: target month (integer). If `month = NA`, the standard deviation values are computed for each month.
+    + `interval`: index of the 10 day interval of the corresponding month (1, 2 or 3). If `interval = NA`, the standard deviation values are computed for each interval of the corresponding month.
+    + `year`: target year range (integer of form `c(start, end)`). If `year = NA`, the standard deviation values are computed for the maximum possible time interval.
+   
+* Value:
+    + `RasterLayer` object with the corresponding standard deviation values if `month != NA` and `interval != NA`.
+    + `RasterStack` objet with the corresponding standard deviation values for each interval of a specified month if `month != NA` and `interval == NA` or the corresponding standard deviation values for each month for a specified interval if `month == NA` and `interval != NA` or the corresponding standard deviation values for each month and each interval if `month == NA` and `interval == NA`. The slot `z` of the `RasterStack` object is in each case of the form `paste0(month, "_", interval)`, e.g. `1_1` for the first ten day interval of January.
+
+```{r intervalSD, eval = F}
+intervalSD <- function(variable,
+                       month = NA,
+                       interval = NA,
+                       year = NA
+){
+  
+  # if year == NA: compute mean for the whole time interval of variable
+  if(is.na(year)){
+    year <- as.numeric(format(as.Date(variable@z[[1]]), "%Y"))[c(1, length(variable@z[[1]]))]
+  }
+  
+  # define month range
+  month.range <- as.numeric(format(as.Date(variable@z[[1]]), "%m"))[c(1, length(variable@z[[1]]))]
+  
+  # define vector with individual years
+  years <- seq(year[1], year[2])
+  
+  if(is.na(month) == T){
+    # define range of months
+    months <- c(1:12)
+  }else{
+    months <- month
+  }
+   
+  if(is.na(interval) == T){
+    # define range of intervals
+    intervals <- c(1:3)
+  }else{
+    intervals <- interval
+  } 
+    
+  # define raster stack to store values in
+  stack.month <- stack()
+  
+  for(month_i in months){
+      
+    # define raster stack to store values in
+    stack.interval <- stack()
+    
+    for(interval_i in intervals){
+      
+      # define raster stack to store values in
+      tendstack <- stack()
+      
+      for(year_i in c(1:length(years))){
+        
+       if((year_i == 1 & month_i < month.range[1])| (year_i == length(years) & month_i > month.range[2])){
+         next 
+       } 
+        
+tendstack <- stack(tendstack, tenDayMean(variable = variable, month = month_i, interval = interval_i, year = as.numeric(substr(as.character(years[year_i]), 3, 4)), layers = F))
+      }
+      
+      # calculate sd of tendstack
+      sd.tendstack <- sd(tendstack)
+      
+      # stack tendstack for each interval
+      stack.interval <- stack(stack.interval, sd.tendstack)
+      
+    }
+    
+    # stack stack.interval for each month
+    stack.month <- stack(stack.month, stack.interval)
+    
+  }
+  
+  # define slot z of stack.month
+  stack.month@z[[1]] <- paste0(sapply(months, function(x){rep(x, length(intervals))}), "_",  rep(intervals, length(months)))
+  
+  return(stack.month)
+  
+}
+```
+
 ## totErainterimPrecipitation
 
 Function in order to calculate the total daily precipitation of netcdf raster files as downloaded from ERA interim as suggested by https://software.ecmwf.int/wiki/pages/viewpage.action?pageId=56658233 (Example 1).
@@ -397,12 +562,18 @@ Function in order to calculate the total daily precipitation of netcdf raster fi
     + `time`: The temproal units for which cumulated precipitation should be calculated. One of `"day"`, `"month"` or `"year"`. Default is `time = "day"`.
     + `interval`: A `POSIXct` vector with the first entry indicating the first day and the second entry indicating the last day of a target interval for which values for total precipitation should be calculated. If `interval = NULL`, the entire temporal range of the object `precipitation` is used for calcualtions. Default is `interval = NULL`. 
     + `cores`: The number of cores to be used in parallel computing. Default is `cores = 10`.
+    + `timedate`: A `POSIXct` vector containing the temporal information for each band/layer of variable.
    
 * Value:
-    + `RasterStack` object with the corresponding cumulated precipitation values. For each temporal unit (e.g. day) within the target time interval as specified by `interval`, one layer will be created. The slot `z` contains the names of the corresponding time unit.
+    + a `list` containing:
+        1. a `RasterBrick` object with the corresponding cumulated precipitation values. For each temporal unit (e.g. day) within the target time interval as specified by `interval`, one layer will be created. The slot `z` contains the names of the corresponding time unit.
+        2. a `character` vector containing the new temporal information (i.e. days).
+        
+* Issues:
+    + not tested yet.
     
 ```{r totErainterimPrecipitation, eval = F}
-totErainterimPrecipitation <- function(precipitation, time = "day", interval = NULL, cores = 10){
+totErainterimPrecipitation <- function(precipitation, time = "day", interval = NULL, cores = 10, timedate){
   
   # load packages
   require("foreach")
@@ -418,7 +589,7 @@ totErainterimPrecipitation <- function(precipitation, time = "day", interval = N
   )
   
   # extract time information from precipitation
-  z <- strftime(as.POSIXct(precipitation@z[[1]], format = "%Y-%m-%d %H:%M:%S"), format = ft)
+  z <- strftime(timedate, format = ft)
   
   # subset precipitation and z within interval
   if(is.null(interval) == F){
@@ -431,7 +602,7 @@ totErainterimPrecipitation <- function(precipitation, time = "day", interval = N
   }
   
   # extract time information from z
-  z <- strftime(as.POSIXct(precipitation@z[[1]], format = "%Y-%m-%d %H:%M:%S"), format = ft)
+  z <- strftime(timedate, format = ft)
   
   # set up cluster
   cl <- makeCluster(cores, outfile="", type = "PSOCK")
@@ -453,14 +624,14 @@ totErainterimPrecipitation <- function(precipitation, time = "day", interval = N
       
     }
   
-  # define z slot
-  precipitation.sum@z[[1]] <- z
+  # convert to RasterBrick object
+  precipitation.sum <- brick(precipitation.sum)
   
   # stop cluster
   stopCluster(cl)
   
   # return result
-  return(precipitation.sum)
+  return(list(precipitation.sum, day = z))
 }
 ```
 
@@ -473,12 +644,18 @@ Function in order to calculate the relative air humidity [%] of netcdf raster fi
     + `t`: `RasterBrick` object as downloaded from ERA INTERIM containing values for the air temperature. Is supposed to have the same temporal extent and resolution as `dt`.
     + `interval`: A `POSIXct` vector with the first entry indicating the first day and the second entry indicating the last day of a target interval for which values for relative air humidity should be calculated. If `interval = NULL`, the entire common temporal range of the objects `dt` and `t` is used for calcualtions. Default is `interval = NULL`. 
     + `cores`: The number of cores to be used in parallel computing. Default is `cores = 10`.
+    + `timedate`: A `POSIXct` vector containing the temporal information for each band/layer of variable.
    
 * Value:
-    + `RasterStack` object with values for the relative air humidity [%] over water. The temporal resolution is th same as for the input raster objects `dt` and `t`.
+    + a `list` containing:
+        1. a `RasterBrick` object with values for the relative air humidity [%] over water. The temporal resolution is th same as for the input raster objects `dt` and `t`.
+        2. a `character` vector containing the new temporal information (i.e. days).
+        
+* Issues:
+    + not tested yet.
     
 ```{r relErainterimAirhumidity, eval = F}
-relErainterimAirhumidity <- function(dt, t, interval = NULL, cores = 10){
+relErainterimAirhumidity <- function(dt, t, interval = NULL, cores = 10, timedate){
   
   # load packages
   require("foreach")
@@ -492,7 +669,7 @@ relErainterimAirhumidity <- function(dt, t, interval = NULL, cores = 10){
   }
   
   # extract time information from dt and t
-  z <- as.POSIXct(dt@z[[1]], format = "%Y-%m-%d %H:%M:%S")
+  z <- timedate
   
   # subset dt, t and z within interval
   if(is.null(interval) == F){
@@ -523,14 +700,14 @@ relErainterimAirhumidity <- function(dt, t, interval = NULL, cores = 10){
       
     }
   
-  # define z slot
-  rh@z[[1]] <- z
+  # convert to RasterBrick object
+  rh <- brick(rh)
   
   # stop cluster
   stopCluster(cl)
   
   # return result
-  return(rh)
+  return(list(rh, day = z))
 }
 ```
 
@@ -541,12 +718,18 @@ Function in order to calculate the daily mean of hourly measured weather data (a
 * Arguments:
     + `variable`: A `RasterBrick` or `RasterStack` object with hourly measured values.
     + `cores`: The number of cores to be used in parallel computing. Default is `cores = 10`.
+    + `timedate`: A `POSIXct` vector containing the temporal information for each band/layer of variable.
    
 * Value:
-    + `RasterStack` object with daily mean values for `variable`.
+    + a `list` containing:
+        1. a `RasterBrick` object with daily mean values for `variable`.
+        2. a `character` vector containing the new temporal information (i.e. days).
+        
+* Issues:
+    + not tested yet.
     
 ```{r dailyMeans, eval = F}
-dailyMeans <- function(variable, cores = 10){
+dailyMeans <- function(variable, cores = 10, timedate){
   
   # load packages
   require("foreach")
@@ -554,7 +737,7 @@ dailyMeans <- function(variable, cores = 10){
   require("parallel")
   
   # extract time information from variable
-  z <- as.POSIXct(variable@z[[1]], format = "%Y-%m-%d %H:%M:%S")
+  z <- timedate
   z <- strftime(z, format = "%Y-%m-%d")
   
   # set up cluster
@@ -572,14 +755,14 @@ dailyMeans <- function(variable, cores = 10){
       
     }
   
-  # define z slot
-  dmean@z[[1]] <- z
+  # convert to RasterBrick object
+  dmean <- brick(dmean)
   
   # stop cluster
   stopCluster(cl)
   
   # return result
-  return(dmean)
+  return(list(dmean, day = z))
 }
 ```
 
@@ -592,12 +775,18 @@ Function in order to calculate the monthly long-term mean of a climate variable 
     + `tstart`: Numeric value (four places) for the first year to consider as long-term interval.
     + `tend`: Numeric value (four places) for the last year to consider as long-term interval.
     + `cores`: The number of cores to be used in parallel computing. Default is `cores = 10`.
+    + `timedate`: A `POSIXct` vector containing the temporal information for each band/layer of variable.
    
 * Value:
-    + `RasterStack` object with monthly long-term mean values for `variable`.
+    + a `list` containing:
+        1. a `RasterBrick` object with monthly long-term mean values for `variable`.
+        2. a `character` vector containing the new temporal information (i.e. months).
+        
+* Issues:
+    + not tested yet.
     
 ```{r monthlyLongTermMeans, eval = F}
-monthlyLongTermMeans <- function(variable, tstart, tend, cores = 10){
+monthlyLongTermMeans <- function(variable, tstart, tend, cores = 10, timedate){
   
   # load packages
   require("foreach")
@@ -605,7 +794,7 @@ monthlyLongTermMeans <- function(variable, tstart, tend, cores = 10){
   require("parallel")
   
   # extract time information from variable
-  z <- as.POSIXct(variable@z[[1]], format = "%Y-%m-%d")
+  z <- timedate
   
   # define vectors for different time levels
   z.year <- strftime(z, format = "%Y")
@@ -627,14 +816,75 @@ monthlyLongTermMeans <- function(variable, tstart, tend, cores = 10){
       
     }
   
-  # define z slot
-  mean.months@z[[1]] <- unique(z.month)
+  # convert to RasterBrick object
+  mean.months <- brick(mean.months)
   
   # stop cluster
   stopCluster(cl)
   
   # return result
-  return(mean.months)
+  return(mean.months, month = unique(z.month))
+}
+```
+
+## monthlyLongTermSD
+
+Function in order to calculate the monthly long-term standard deviation of a climate variable (as a `RasterBrick` or `RasterStack` object).
+
+* Arguments:
+    + `variable`: A `RasterBrick` or `RasterStack` object with values for a climate variable (for at least 20 years).
+    + `tstart`: Numeric value (four places) for the first year to consider as long-term interval.
+    + `tend`: Numeric value (four places) for the last year to consider as long-term interval.
+    + `cores`: The number of cores to be used in parallel computing. Default is `cores = 10`.
+    + `timedate`: A `POSIXct` vector containing the temporal information for each band/layer of variable.
+   
+* Value:
+    + a `list` containing:
+        1. a `RasterBrick` object with monthly long-term standard deviation values for `variable`.
+        2. a `character` vector containing the new temporal information (i.e. months).
+        
+* Issues:
+    + not tested yet.
+    
+```{r monthlyLongTermSD, eval = F}
+monthlyLongTermSD <- function(variable, tstart, tend, cores = 10, timedate){
+  
+  # load packages
+  require("foreach")
+  require("doParallel")
+  require("parallel")
+  
+  # extract time information from variable
+  z <- timedate
+  
+  # define vectors for different time levels
+  z.year <- strftime(z, format = "%Y")
+  z.month <- strftime(z, format = "%m")
+  z <- strftime(z, format = "%Y-%m") 
+  
+  # set up cluster
+  cl <- makeCluster(cores, outfile="", type = "PSOCK")
+  registerDoParallel(cl)
+  clusterCall(cl, function(){.libPaths(new = c(.libPaths(), "/home/christian/R/packages/"))
+    .libPaths(new = c(.libPaths(), "/home/h_teic01/R/packages/"))
+    .libPaths()})
+  
+  # calculate monthly means
+  sd.months <- 
+    foreach(step_i = unique(z.month), .packages = c("raster"), .combine = stack) %dopar%{
+      
+      sd.month <- calc(variable[which(z.month == step_i & z.year >= tstart & z.year <= tend)], fun = sd)
+      
+    }
+  
+  # convert to RasterBrick object
+  sd.months <- brick(sd.months)
+  
+  # stop cluster
+  stopCluster(cl)
+  
+  # return result
+  return(sd.months, month = unique(z.month))
 }
 ```
 
@@ -647,30 +897,42 @@ Function in order to calculate the long-term mean for ten day intervals in a mov
     + `tstart`: Numeric value (four places) for the first year to consider as long-term interval.
     + `tend`: Numeric value (four places) for the last year to consider as long-term interval.
     + `cores`: The number of cores to be used in parallel computing. Default is `cores = 10`.
+    + `timedate`: a character vector with temporal information on the layers of `variable` (in the format `"%Y-%m-%d"`).
    
 * Value:
-    + `RasterStack` object with monthly long-term mean values for `variable`.
+    + A `list` containig: 
+        1. a`RasterBrick` object with monthly long-term mean values for `variable`. 
+        2. a `character` vector containing information on the corresponding unique days in `variable` across all years.
+    
+* Issues:
+    + not tested yet.
     
 ```{r tenDayLongTermMWMeans, eval = F}
-tenDayLongTermMWMeans <- function(variable, tstart, tend, cores = 10){
+tenDayLongTermMWMeans <- function(variable, tstart, tend, cores = 10, timedate){
   
   # load packages
   require("foreach")
   require("doParallel")
   require("parallel")
   
+  # test if provided time argument fits number of layers
+  if(nlayers(variable) != length(time)){
+    stop("length(time) has to equal nlayers(variable)")
+  }
+  
   # extract time information from variable
-  z <- as.POSIXct(variable@z[[1]], format = "%Y-%m-%d")
+  # z <- as.POSIXct(variable@z[[1]], format = "%Y-%m-%d")
+  z <- timedate
   
   # define vectors for different time levels
   z.year <- strftime(z, format = "%Y")
   z.day <- strftime(z, format = "%m-%d")
+  z.day1 <- strftime(z, format = "%m-%d")
   z <- strftime(z, format = "%Y-%m") 
   
-  # get vector with leap years
-  leap.year <- rep(0, length(z.year))
-  leap.year[which(leap.year %in% names(table(z.year))[which(as.numeric(table(z.year)) == 364)])] <- 1
-  as.numeric(table(z.year))
+  # sort z.day
+  z.day <- unique(names(sapply(z.day, function(x){as.Date(x, format = "%m-%d")})))
+  z.day <- z.day[c(1:59, length(z.day), 60:(length(z.day)-1))]
   
   # set up cluster
   cl <- makeCluster(cores, outfile="", type = "PSOCK")
@@ -681,29 +943,104 @@ tenDayLongTermMWMeans <- function(variable, tstart, tend, cores = 10){
   
   # calculate ten day means
   mean.tds <- 
-    foreach(step_i = unique(z.day), .packages = c("raster"), .combine = stack) %dopar%{
+    foreach(step_i = z.day, .packages = c("raster"), .combine = stack) %dopar%{
       
       # get index to subset rasters
-      subset.index <- which(z.day == step_i)
+      subset.index <- which(z.day1 == step_i)
       if(step_i == "02-29"){
-        subset.index <- c(subset.index, which(z.day == "02-28" & leap.year == 1))
+        subset.index <- c(which(z.day1 == "02-28"))
       }
       for(int_day_i in c(1:9)){
         subset.index <- unique(c(subset.index, subset.index+1))
       }
       
-      mean.td <- calc(variable[subset.index[which(subset.index %in% which(z.year >= tstart & z.year <= tend))]], fun = mean)
+      mean.td <- calc(variable[[subset.index[which(subset.index %in% which(z.year >= tstart & z.year <= tend))]]], fun = mean)
       
     }
-  
-  # define z slot
-  mean.tds@z[[1]] <- unique(z.day)
   
   # stop cluster
   stopCluster(cl)
   
   # return result
-  return(mean.tds)
+  return(list(mean.tds, day = z.day))
+}
+```
+
+## tenDayLongTermMWSD
+
+Function in order to calculate the long-term standard deviation for ten day intervals in a moving window of a climate variable (as a `RasterBrick` or `RasterStack` object). For leap years, the corresponding ten day interval containing the 29 th february in all other years instead reaches one da more in th future and the ten day interval for the 29 th february is the same as for the 28 th february.
+
+* Arguments:
+    + `variable`: A `RasterBrick` or `RasterStack` object with values for a climate variable (for at least 20 years).
+    + `tstart`: Numeric value (four places) for the first year to consider as long-term interval.
+    + `tend`: Numeric value (four places) for the last year to consider as long-term interval.
+    + `cores`: The number of cores to be used in parallel computing. Default is `cores = 10`.
+    + `timedate`: a character vector with temporal information on the layers of `variable` (in the format `"%Y-%m-%d"`).
+   
+* Value:
+    + A `list` containig: 
+        1. a`RasterBrick` object with monthly long-term standard deviation values for `variable`. 
+        2. a `character` vector containing information on the corresponding unique days in `variable` across all years.
+    
+* Issues:
+    + not tested yet.
+    
+```{r tenDayLongTermMWSD, eval = F}
+tenDayLongTermMWSD <- function(variable, tstart, tend, cores = 10, timedate){
+  
+  # load packages
+  require("foreach")
+  require("doParallel")
+  require("parallel")
+  
+  # test if provided time argument fits number of layers
+  if(nlayers(variable) != length(time)){
+    stop("length(time) has to equal nlayers(variable)")
+  }
+  
+  # extract time information from variable
+  # z <- as.POSIXct(variable@z[[1]], format = "%Y-%m-%d")
+  z <- timedate
+  
+  # define vectors for different time levels
+  z.year <- strftime(z, format = "%Y")
+  z.day <- strftime(z, format = "%m-%d")
+  z.day1 <- strftime(z, format = "%m-%d")
+  z <- strftime(z, format = "%Y-%m") 
+  
+  # sort z.day
+  z.day <- unique(names(sapply(z.day, function(x){as.Date(x, format = "%m-%d")})))
+  z.day <- z.day[c(1:59, length(z.day), 60:(length(z.day)-1))]
+  
+  # set up cluster
+  cl <- makeCluster(cores, outfile="", type = "PSOCK")
+  registerDoParallel(cl)
+  clusterCall(cl, function(){.libPaths(new = c(.libPaths(), "/home/christian/R/packages/"))
+    .libPaths(new = c(.libPaths(), "/home/h_teic01/R/packages/"))
+    .libPaths()})
+  
+  # calculate ten day means
+  sd.tds <- 
+    foreach(step_i = z.day, .packages = c("raster"), .combine = stack) %dopar%{
+      
+      # get index to subset rasters
+      subset.index <- which(z.day1 == step_i)
+      if(step_i == "02-29"){
+        subset.index <- c(which(z.day1 == "02-28"))
+      }
+      for(int_day_i in c(1:9)){
+        subset.index <- unique(c(subset.index, subset.index+1))
+      }
+      
+      sd.td <- calc(variable[[subset.index[which(subset.index %in% which(z.year >= tstart & z.year <= tend))]]], fun = sd)
+      
+    }
+  
+  # stop cluster
+  stopCluster(cl)
+  
+  # return result
+  return(list(sd.tds, day = z.day))
 }
 ```
 
@@ -726,7 +1063,11 @@ Function in order to evaluate for a set of raster objects (air temperature, rela
 * Value:
     + `RasterStack` object with numerical values indicating if drought conditions (2), near drought conditions (1) or no drought conditions (0) are met.
    
-   NOT TESTED!!!
+* Issues:
+    + How to merge data from different temporal resolution? I guess that the largest temporal resolution of criteria to consider is "daily". Therefore, if comparisons with monthly mean values are performed, these comparisons have nevertheless to be done for all days.
+    + It is not clear if the evaluation is correct with using the long term ten day interval moving window mean values.
+    
+NOT TESTED!!!
     
 ```{r evaluateDroughtNEMA, eval = F}
 evaluateDroughtNEMA <- function(t, p, t.long.m, t.long.sd, p.long, rh, t.max, naturalregions = NULL, interval = c(5, 8), cores = 10){
@@ -874,4 +1215,179 @@ evaluateDroughtNEMA <- function(t, p, t.long.m, t.long.sd, p.long, rh, t.max, na
   return(drought.tot)
 }
 ```
+
+## evaluateDroughtNEMA2
+
+Function in order to evaluate for a set of raster objects (air temperature, relative humidity), for each point and time, if drought or near drought conditions are met for a specified time interval. Needed data are: Cumulated precipitation for a target interval at a temporal resolution of ten day intervals or months, Mean air temperature for a target interval at a temporal resolution of ten day intervals or months
+
+In contrast to `evaluateDroughtNEMA`, this function does not compare the values for individual days within a target period with respective long-tem mean values, but means for ten day intervals within a target period with respective long-tem mean values.  
+
+* Arguments:
+    + `rh`: `RasterBrick` object containing ten day interval mean values for the relative air humidity [%] within a target period.
+    + `t`: `RasterBrick` object containing ten day interval mean values values for the air temperature [K]  within a target period.
+    + `p`: `RasterBrick` object containing ten day interval mean values for the total daily precipitation [m]  within a target period.
+    + `t.long.m`: `RasterStack` object (monthly long-term mean values or mean values for moving window ten day intervals) containing long term mean air temperature values [K] (for the all ten day intervals or months of a year).
+    + `t.long.sd`: `RasterStack` object (monthly long-term mean values or mean values for moving window ten day intervals) containing long term standard deviation of the air temperature values [K] (for the all ten day intervals or months of a year).
+    + `p.long`: `RasterStack` object (monthly long-term mean values or mean values for moving window ten day intervals) containing long term mean cumulated precipitation values [m] (for the all ten day intervals or months of a year).
+    + `t.max`: `RasterBrick` object containing values for the daily (?) maximum air temperature.
+    + `naturalregions`: A `SpatialPolygonsDataframe` with information on the landcover as speifie by the NEMA. If `naturalregions = NULL`, landcover specific criteria are not considered. Default is `naturalregions = NULL`.
+    + `interval`: A numerical vector with the first entry indicating the first month and the second entry indicating the last month of a target interval for which drought conditions should be evaluated. Default is `interval = c(5, 8)`, as suggested by the NEMA. 
+    + `cores`: The number of cores to be used in parallel computing. Default is `cores = 10`.
+   
+* Value:
+    + `RasterStack` object with numerical values indicating if drought conditions (2), near drought conditions (1) or no drought conditions (0) are met.
+   
+* Issues:
+    + How to merge data from different temporal resolution? I guess that the largest temporal resolution of criteria to consider is "daily". Therefore, if comparisons with monthly mean values are performed, these comparisons have nevertheless to be done for all days.
+    + It is not clear if the evaluation is correct with using the long term ten day interval moving window mean values.
+    
+NOT TESTED!!!
+    
+```{r evaluateDroughtNEMA2, eval = F}
+evaluateDroughtNEMA2 <- function(t, p, t.long.m, t.long.sd, p.long, rh, t.max, naturalregions = NULL, interval = c(5, 8), cores = 10){
+  
+  # load packages
+  require("foreach")
+  require("doParallel")
+  require("parallel")
+  
+  # test which long-term data are provided
+  if(nlayers(t.long.m) > 12){
+    longterm <- "dt"
+    format.longterm <- "%d-%m"
+  }esle{
+    longerm <- "m"
+    format.longterm <- "%m"
+  }
+  
+  # get temporal information
+  z <- as.POSIXct(t@z[[1]], format = "%d-%m-%Y")
+  z.dm <- strftime(z, format = "%d-%m")
+  z.lon <- as.POSIXct(t.lon.m@z[[1]], format = format.longterm)
+  
+  # set up cluster
+  cl <- makeCluster(cores, outfile="", type = "PSOCK")
+  registerDoParallel(cl)
+  clusterCall(cl, function(){.libPaths(new = c(.libPaths(), "/home/christian/R/packages/"))
+    .libPaths(new = c(.libPaths(), "/home/h_teic01/R/packages/"))
+    .libPaths()})
+  
+  # get p.long minus 49% p.long
+  p.long.lower49 <- 
+    foreach(step_i = c(1:nlayers(p.long)), .packages = c("raster"), .combine = stack) %dopar%{
+      p.long.lower1 <- calc(p.long[[step_i]], fun = function(x){0.51*x})
+      p.long.lower1
+    }
+  
+  # get p.long minus 20% p.long
+  p.long.lower20 <- 
+    foreach(step_i = c(1:nlayers(p.long)), .packages = c("raster"), .combine = stack) %dopar%{
+      p.long.lower1 <- calc(p.long[[step_i]], fun = function(x){0.8*x})
+      p.long.lower1
+    }
+  
+  # get t.long plus 2 sigma
+  t.long.upper2s <- 
+    foreach(step_i = c(1:nlayers(t.long.m)), .packages = c("raster"), .combine = stack) %dopar%{
+      t.long.upper2sa <- overlay(x = t.long.m[[step_i]], y = t.long.sd[[step_i]], fun = function(x, y){x + 2*y})
+      t.long.upper2sa
+    }
+  
+  # get t.long plus 1 K
+  t.long.upper1k <- 
+    foreach(step_i = c(1:nlayers(t.long.m)), .packages = c("raster"), .combine = stack) %dopar%{
+      t.long.upper1ka <- calc(t.long.m[[step_i]], fun = function(x){x + 1})
+      t.long.upper1ka
+    }
+  
+  # get t.long plus 1.9 K
+  t.long.upper1.9k <- 
+    foreach(step_i = c(1:nlayers(t.long.m)), .packages = c("raster"), .combine = stack) %dopar%{
+      t.long.upper1.9ka <- calc(t.long.m[[step_i]], fun = function(x){x + 1.9})
+      t.long.upper1.9ka
+    }
+  
+  # get t.long plus 1 sigma
+  t.long.upper1s <- 
+    foreach(step_i = c(1:nlayers(t.long.m)), .packages = c("raster"), .combine = stack) %dopar%{
+      t.long.upper1sa <- overlay(x = t.long.m[[step_i]], y = t.long.sd[[step_i]], fun = function(x, y){x + 1*y})
+      t.long.upper1sa
+    }
+  
+  # create empty raster with drought criteria
+  drought.t <- t
+  values(drought.t) <- 0
+  
+  # assess drought according to main criteria
+  if(longterm == "dt"){
+  drought.main.crit <- 
+    foreach(day_i = z, .packages = c("raster"), .combine = stack) %dopar%{
+      
+      # get index to subset long-term thresholds
+      subset.index <- which(z.lon == strftime(day_i, format = "%d-%m"))
+      if(subset.index <= 9){
+        subset.index <- c(1:(subset.index+9), ((nlayers(t.long.m)-10+subset.index):nlayers(t.long.m)))
+      }else{
+        if(subset.index >= 357){
+          subset.index <- c((subset.index-9):(subset.index+nlayers(t.long.m)-subset.index), 1:(9-(nlayers(t.long.m)-subset.index)))
+        }else{
+          subset.index <- c((subset.index-9):(subset.index+9))
+        }
+      }
+      
+      t.match <- overlay(x = t[[which(t@z[[1]] == day_i)]], y = t.long.upper1s[[subset.index]], y1 = t.long.upper2s[[subset.index]], y2 = t.long.upper1.9k[[subset.index]], y3 = t.long.upper1k[[subset.index], w = drought.t, fun = function(x, y, y1, y2, y3, w){
+        w[which((x > y)| (x >= y3))] <- 1 # near drought
+        w[which(x > y1 | x > y2)] <- 2 # drought
+      })
+        
+      p.match <- overlay(x = p[[which(t@z[[1]] == day_i)]], y = p.long.lower20[[subset.index]], y1 = p.long.lower49[[subset.index]], w = drought.t, fun = function(x, y, y1, w){
+        w[which(x > y)] <- 1 # near drought
+        w[which(x > y1)] <- 2 # drought
+      })
+        
+     tot.match <- drought.t
+     tot.match[which(t.match == 1 & p.match == 1)] <- 1
+     tot.match[which(t.match == 2 & p.match == 2)] <- 2 
+     
+     tot.match
+     
+    }
+  }
+  
+  if(longterm == "m"){
+  drought.main.crit <- 
+    foreach(day_i = z, .packages = c("raster"), .combine = stack) %dopar%{
+      
+     # !!!
+      
+     tot.match
+     
+    }
+  }
+  
+  # assess drought according to additional criteria
+  drought.add.crit <- 
+    foreach(day_i = z, .packages = c("raster"), .combine = stack) %dopar%{
+      
+      rh.match <- overlay(x = rh[[which(t@z[[1]] == day_i)]], y = drought.t, fun = function(x, y){
+        y[which(x < 30)] <- 2
+      })
+      
+      #### add remianing criteria
+      
+      tot.match
+      
+    }
+  
+  # merge main and additional criteria
+  drought.tot
+  
+  # stop cluster
+  stopCluster(cl)
+  
+  # return result
+  return(drought.tot)
+}
+```
+
 <br><br>
