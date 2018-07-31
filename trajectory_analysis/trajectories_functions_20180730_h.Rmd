@@ -1,0 +1,3378 @@
+---
+title: "Herders - Functions for the Trajectories Data Analysis"
+author: "Christian Knoth, Henning Teickner"
+date: "27 April 2018"
+output: 
+  html_document:
+    toc: true
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+<style>
+  body {
+    text-align: justify}
+</style>
+  
+# Introduction
+  
+Definition of the workspace
+```{r workspace_definition, eval = T, message = F, warning = F}
+# define directory to obtain data from
+# directory.data = "C:/Herders/trajectories/"
+```
+
+Load required packages
+```{r load_packages, eval = T, message = F, warning = F}
+# load packages
+require(sp)
+require(spacetime)
+require(trajectories)
+#library(rgl) # could not be loaded
+#library(rglwidget)
+library(mapview)
+library(xts)
+library(lubridate)
+library(spatstat)
+library(rgeos)
+library(maptools)
+
+```
+
+# Functions
+
+## readTrack
+
+Function in order to import an individual GPS track file.
+
+* Arguments:
+  + `fname`: file name of the correpsonding GPS track file.
+
+* Value:
+  + An object of class `Track`.
+
+```{r readTrack, eval = T, message = F, warning = F}
+readTrack = function(fname) {
+  dt2POSIX = function(dt, tm) {
+    stopifnot(is.numeric(dt) && is.numeric(tm))
+    as.POSIXct(paste0(
+      2000 + dt %/% 10000, "-",
+      (dt %/% 100) %% 100, "-",
+      dt %% 100, " ",
+      tm %/% 10000, ":",
+      tm %/% 100 %% 100, ":",
+      tm %% 100), tz ="GMT")
+  }
+  print(paste("reading file", fname))
+  x = read.csv(fname, skipNul = TRUE) # most files contain embedded nuls
+  x = x[!is.na(x$DATE),]
+  x$lat = as.numeric(sub("N", "", x$LATITUDE.N.S))
+  x$lon = x$LONGITUDE.E.W
+  tm = dt2POSIX(x$DATE, x$TIME)
+  pts = SpatialPoints(cbind(x$lon, x$lat), CRS("+proj=longlat +ellps=WGS84"))
+  st = STIDF(pts, tm, x)
+  Track(st)
+}
+```
+
+## removeEmptyFiles
+
+Function in order to remove empty csv tables.
+
+* Arguments:
+  + `listname`: a list of file names of the correpsonding GPS track files that should be chekced.
+
+```{r removeEmptyFiles, eval = T, message = F, warning = F}
+removeEmptyFiles = function(listname){
+  remove = character()
+  checkFile = function(fname){
+    if (file.size(fname) == 0){
+      append(remove,fname)
+    } else{
+      append(remove,NA)
+    }
+    
+  }
+  remove = lapply(listname,checkFile)
+  remove = remove[!is.na(remove)]
+  print("Ignoring empty files:", quote=F)
+  print(paste(remove), print.na = "", quote=F)
+  listname[! listname %in% remove]
+}
+```
+
+## removeEmptyFolders
+
+Function in order to remove empty folders.
+
+* Arguments:
+  + `listname`: a list of folder names that should be checked.
+
+```{r removeEmptyFolders, eval = T, message = F, warning = F}
+removeEmptyFolders = function(dirlist){
+  remove = character()
+  checkDir = function(dirname){
+    if (length(list.files(dirname, pattern="*.CSV", full.names = T)) == 0){
+      append(remove,dirname)
+    } else{
+      append(remove,NA)
+    }
+    
+  }
+  remove = lapply(dirlist,checkDir)
+  remove = remove[!is.na(remove)]
+  print("Ignoring empty folders:", quote=F)
+  print(paste(remove), print.na = "", quote=F)
+  dirlist[! dirlist %in% remove]
+}
+```
+
+## loadTracks
+
+Function in order to load all GPS track data within a specified directory. The function also removes empty csv tables within the folders by calling the function `removeEmptyFiles`.
+
+* Arguments:
+  + `folder`: path to a folder with csv data.
+
+* Value:
+  + An object of class `Tracks`.
+
+```{r loadTracks, eval = T, message = F, warning = F}
+loadTracks = function(folder) {
+  print(paste("Loading tracks from folder", folder, sep = " "),quote = F)
+  lst = list.files(folder, pattern = "*.CSV", full.names = T)
+  lst = removeEmptyFiles(lst)
+  Tracks(lapply(lst, readTrack))
+}
+```
+
+## timeActiveTrack
+
+Function in order to compute the time [s] during which position data was collected in a given `Track` object (for an individual `Track` object) within a given time frame.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `tstart`: a POSIXct object indicating the date and time of the start of the target period.
++ `tend`: a POSIXct object indicating the date and time of the end of the target period.
+
+* Value:
+  + 0: If the `Track` object does not cover any value of the target period.
++ 1: If the maximum time value of the `Track` object equals the start value of the target period or if the minimum time value of the `Track` object equals the end value of the target period.
++ numeric: The number of seconds between the first entry of the `Track` object within the time period and the last entry of the `Track` object within the time period.
+
+```{r timeActiveTrack, eval = T, message = F, warning = F}
+timeActiveTrack <- function(currenttrack, tstart, tend) {
+  if (max(index(currenttrack@time)) < tstart |
+      min(index(currenttrack@time)) > tend) {
+    #if currenttrack is completely outside the given timeframe return 0
+    0
+  }
+  else if (max(index(currenttrack@time)) == tstart |
+           min(index(currenttrack@time)) == tend) {
+    #if currenttrack touches the time frame (e.g. last fix of track equals start of time frame) return 1
+    # to show there is a fix in the given time frame
+    1
+  }
+  else{
+    as.double(difftime(max(index(
+      currenttrack@time
+    )[index(currenttrack@time) <= tend]),
+    min(index(
+      currenttrack@time
+    )[index(currenttrack@time) >= tstart]), units =
+      "sec"))
+  }
+}
+```
+
+## timeActiveTracks
+
+Function in order to compute the time [s] during which position data was collected in a given `Track` object (for all `Track` objects within this `Tracks` object) within a given time frame by means of the function `timeActiveTrack` (yields the total time during which the logger of a given household was active).
+
+* Arguments:
+  + `currenttracks`: A `Tracks` object.
++ `tstart`: a POSIXct object indicating the date and time of the start of the target period.
++ `tend`: a POSIXct object indicating the date and time of the end of the target period.
+
+* Value:
+  + numeric: The sum of the number of seconds between the first entry of a `Track` object within the time period and the last entry of the same `Track` object within the time period for all `Track` objects within the `Tracks` object.
+
+```{r timeActiveTracks, eval = T, message = F, warning = F}
+timeActiveTracks <- function(currenttracks, tstart, tend){
+  sum(unlist(
+    lapply(
+      currenttracks@tracks,
+      timeActiveTrack,
+      tstart = tstart,
+      tend = tend
+    )
+  ))
+}
+```
+
+## timeActiveTracksCollection
+
+Function in order to compute the time [s] during which position data was collected in a given `Track` object (for all `Track` objects within this `Tracks` object) within a given time frame by means of the function `timeActiveTrack` (yields the total time during which the logger of a given household was active).
+
+* Arguments:
+  + `trcollection`: A `TracksCollection` object.
++ `timeframe`: A list with the following entries:
+  + `tstart`: a POSIXct object indicating the date and time of the start of the target period.
++ `tend`: a POSIXct object indicating the date and time of the end of the target period.
+
+* Value:
+  + numeric: The proportion of the sum of the number of seconds between the first entry of a `Track` object within the time period and the last entry of the same `Track` object within the time period for all `Track` objects within the `TrackCollection` object relative to the number of seconds of the target period.
+
+```{r timeActiveTracksCollection, eval = T, message = F, warning = F}
+timeActiveTracksCollection <- function(timeframe, trcollection) {
+  tstart = timeframe$tstart
+  tend = timeframe$tend
+  trcollection@tracksCollectionData$tactive = unlist(
+    lapply(
+      trcollection@tracksCollection,
+      timeActiveTracks,
+      tstart = tstart,
+      tend = tend
+    )
+  )
+  
+  pctactive = trcollection@tracksCollectionData$tactive /
+    as.integer(difftime(tend, tstart, units = "sec")) * 100
+  
+  return(pctactive)
+}
+```
+
+## findGaps
+
+Function in order to find gaps in a `Track` object based on the duration between measurements. The function takes the track and a tolrance or a threshold value as input. Additionally, the time period within gaps should be searched can be provided.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
++ `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
++ `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
++ `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+
+* Value:
+  + data.frame: A data.frame in the form of the connections slot of a `Track` object containing gaps between data points as entries.
+
+```{r findGaps, eval = T, message = F, warning = F}
+findGaps <- function(currenttrack, tstart = min(index(currenttrack@time)), tend = max(index(currenttrack@time)), threshold = 18000, tolerance = 2) {
+  if (is.null(threshold) == TRUE) {
+    
+    gap_thresh <- 
+      (mean(currenttrack@connections$duration) + tolerance * sd(currenttrack@connections$duration))
+    
+    connectionsub <-
+      currenttrack@connections[index(currenttrack@time) >= tstart &
+                                 index(currenttrack@time) <= tend,]
+    na.omit(connectionsub[connectionsub$duration > gap_thresh,])
+  }
+  else{
+    connectionsub <-
+      currenttrack@connections[index(currenttrack@time) >= tstart &
+                                 index(currenttrack@time) <= tend,]
+    na.omit(connectionsub[connectionsub$duration > threshold,])
+  }
+  
+}
+```
+
+## countGaps
+
+Function in order to count the number of gaps in a `Track` object using the function `findGaps`.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
++ `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
++ `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
++ `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+
+* Value:
+  + numeric: The number of gaps within the `Track` object.
+
+```{r countGaps, eval = T, message = F, warning = F}
+countGaps <- function(currenttrack, tstart = min(index(currenttrack@time)) , tend = max(index(currenttrack@time)), threshold = 18000, tolerance = 2) {
+  length(
+    findGaps(
+      currenttrack, tstart = tstart, tend = tend, threshold = threshold, tolerance = tolerance
+    )[,1]
+  )
+}
+```
+
+## gapDuration
+
+Function in order to calculate the total duration of gaps [s] in a `Track` object using the function `findGaps`.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
++ `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
++ `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
++ `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+
+* Value:
+  + numeric: The sum of the duration of gaps within the `Track` object [s].
+
+```{r gapDuration, eval = T, message = F, warning = F}
+gapDuration <- function(currenttrack, tstart = min(index(currenttrack@time)) , tend = max(index(currenttrack@time)), threshold = 18000, tolerance = 2) {
+  gaps <-
+    findGaps(
+      currenttrack, tstart = tstart, tend = tend, threshold = threshold, tolerance = tolerance
+    )
+  sum(gaps$duration)
+}
+```
+
+## gapProportion
+
+Function in order to calculate the proportion of the duration of gaps in a `Track` object relative to the duration of the total `Track` object (and within a specified time period) using the function `gapDuration`.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
++ `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
++ `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
++ `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+
+* Value:
+  + numeric: The proportion of the duration of gaps in a `Track` object relative to the duration of the total `Track` object (or a specified time period).
+
+```{r gapProportion, eval = T, message = F, warning = F}
+gapProportion <- function(currenttrack, tstart = min(index(currenttrack@time)) , tend = max(index(currenttrack@time)), threshold = 18000, tolerance = 2) {
+  gapDuration(
+    currenttrack,tstart = tstart, tend = tend, threshold = threshold, tolerance = tolerance
+  ) / timeActiveTrack(currenttrack, tstart = tstart, tend = tend)
+  
+}
+```
+
+## totalGapDuration
+
+Function in order to calculate the total duration of gaps [s] for all `Track` objects within a specified `Tracks` object (and for a specified time period).
+
+* Arguments:
+  + `currenttracks`: A `Tracks` object.
++ `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
++ `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
++ `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
++ `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+
+* Value:
+  + numeric: The sum of the duration of gaps for all `Track` objects within the specified `Tracks` object (and within the specified time period) [s].
+
+```{r totalGapDuration, eval = T, message = F, warning = F}
+totalGapDuration <- function(currenttracks, tstart = min(currenttracks@tracksData$tmin), tend = max(currenttracks@tracksData$tmax), threshold = 18000, tolerance = 2) {
+  sum(unlist(
+    lapply(
+      currenttracks@tracks, gapDuration, tstart = tstart, tend = tend, threshold = threshold, tolerance = tolerance
+    )
+  ))
+}
+```
+
+## totalGapProportion
+
+Function in order to calculate the proportion of the duration of gaps for all `Track` objects within a specified `Tracks` object relative to the duration of all `Track` objects within the specified `Tracks` object (and within a specified time period) using the function `gapDuration`.
+
+* Arguments:
+  + `currenttracks`: A `Tracks` object.
++ `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
++ `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
++ `threshold`: An integer value indicating the threshold for the time between two data points [s] above which this is considered as a gap in the `Track` object. Default is `threshold = 18000`, i.e. 5 hours. If `threshold = NULL`, the threshold value is calculated from the data as `mean(duration) + tolerance * sd(duration)`.
++ `tolerance`: An integer value indicating the tolerance of the threshold value calculated from the data if `threshold = NULL`. Default is `tolerance = 2`, i.e. 2 seconds.
+
+* Value:
+  + numeric: The proportion of the duration of gaps for all `Track` objects within a specified `Tracks` object relative to the duration of all `Track` objects within the specified `Tracks` object (and within a specified time period).
+
+```{r totalGapProportion, eval = T, message = F, warning = F}
+totalGapProportion <- function(currenttracks, tstart = min(currenttracks@tracksData$tmin), tend = max(currenttracks@tracksData$tmax), threshold = 18000, tolerance = 2) {
+  totalGapDuration(
+    currenttracks, tstart = tstart, tend = tend, threshold = threshold, tolerance = tolerance
+  ) / timeActiveTracks(currenttracks, tstart = tstart, tend = tend)
+  
+}
+```
+
+## findOutliersTrack
+
+Function in order to identify connections between data points of a specified `Track` object with a speed above a specified threshold value.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `tstart`: a POSIXct object indicating the date and time of the start of the target period. Default is the first value of the `Track` object.
++ `tend`: a POSIXct object indicating the date and time of the end of the target period. Default is the last value of the `Track` object.
++ `threshold`: An integer value indicating the threshold for the speed between two data points [m/s] above which this (connection) is considered as a measurement error. Default is `threshold = 180`.
+
+* Value:
+  + data.frame: A data.frame in the form of the connections slot of a `Track` object containing connections with speed values above `threshold`.
+
+```{r findOutliersTrack, eval = T, message = F, warning = F}
+findOutliersTrack <- function(currenttrack, tstart = min(index(currenttrack@time)), tend = max(index(currenttrack@time)), threshold = 180) {
+  
+  connectionsub <-
+    currenttrack@connections[index(currenttrack@time) >= tstart &
+                               index(currenttrack@time) <= tend, ]
+  na.omit(connectionsub[connectionsub$speed > threshold, ])
+}
+```
+
+## downByDrop
+
+Function in order to subset a `Track` object by specifying a regular time interval between data points (i.e. performing downsampling). The first value of the `Track` object represents the starting point of the time point specification according to the target time interval. The last entry of a sequence of positioning measurements of the GPS tracker (in "spy" mode) is retained assuming that the assessed position data is the most accurate within the corresponding sequence. Points of a the `Track` object are only returned if there are at least two data values with a time interval as long as the specified time interval in the `Track` object.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `timeInterval`: An integer value indicating a time interval [s] as target duration between data points of the `Track` object. Default is `timeInterval = 1770` (i.e. 29.5 minutes).
+
+* Value:
+  + the downsampled `Track` object.
+
+```{r downByDrop, eval = T, message = F, warning = F}
+downByDrop <- function(currenttrack, timeInterval = 1770) {
+  j = length(currenttrack@time)
+  dropindexes <- integer()
+  # go through all fixes starting with the one before the last one and check the time interval to the following fix
+  # in the track
+  for (i in (length(currenttrack@time)-1):1) {
+    if (difftime(currenttrack@time[j], currenttrack@time[i], units = "secs") < timeInterval) {
+      dropindexes <- c(dropindexes, i) #if interval is below timeInterval (1770 secs), current fix will be dropped, "j" remains the following fix in the track
+    }
+    else{
+      j <- i # else: current fix will not be dropped, but set as the new following fix "j" 
+    }
+  }
+  
+  # build new Track from data at all indexes not in 'dropindexes'
+  # but only if there are at least two of them
+  if(length(dropindexes) < length(currenttrack@time) - 1){
+    downsampled <-
+      Track(
+        STIDF(
+          sp = currenttrack@sp[-dropindexes],
+          time = currenttrack@time[-dropindexes],
+          endTime = currenttrack@endTime[-dropindexes],
+          data = currenttrack@data[-dropindexes, ]
+        )
+      )
+    return(downsampled)
+  }
+}
+```
+
+## downByDropTrs
+
+Function in order to subset all `Track` objects within a specified `Tracks` object by specifying a regular time interval between data points (i.e. performing downsampling) and by using the function `downByDrop`.
+
+* Arguments:
+  + `currenttrs`: A `Tracks` object.
++ `timeInterval`: An integer value indicating a time interval [s] as target duration between data points of the `Track` object. Default is `timeInterval = 1770` (i.e. 29.5 minutes).
+
+* Value:
+  + the downsampled `Tracks` object.
+
+```{r downByDropTrs, eval = T, message = F, warning = F}
+downByDropTrs <- function(currenttrs, timeInterval = 1770){
+  tracklist <- lapply(currenttrs@tracks, function(x) downByDrop(x))
+  tracklist <- tracklist[!sapply(tracklist, is.null)]  
+  if(length(tracklist) > 0){
+    trsgen <- Tracks(tracklist)
+    return(trsgen)
+  }
+}
+```
+
+## downByDrop
+
+Function in order to subset a `Track` object by specifying a regular time interval between data points (i.e. performing downsampling). The first value of the `Track` object represents the starting point of the time point specification according to the target time interval. The last entry of a sequence of positioning measurements of the GPS tracker (in "spy" mode) is retained assuming that the assessed position data is the most accurate within the corresponding sequence. Points of a the `Track` object are only returned if there are at least two data values with a time interval as long as the specified time interval in the `Track` object.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `timeInterval`: An integer value indicating a time interval [s] as target duration between data points of the `Track` object. Default is `timeInterval = 1770` (i.e. 29.5 minutes).
++ `quiet`: A logical value indicating if a warning should be printed if the specified `Track` object is shorter than the specified time interval. If `quiet = F`, a warning will be printed, if `quiet = T`, this will not happen.
+
+* Value:
+  + the downsampled `Track` object. If the specified `Track` object is shorter than the specified time interval, the function returns `NULL`.
+
+```{r downByDrop2, eval = T, message = F, warning = F}
+downByDrop <- function(currenttrack, timeInterval = 1770, quiet = F) {
+  
+  j = length(currenttrack@time)
+  dropindexes <- integer()
+  
+  # go through all fixes starting with the one before the last one and check the time interval to the following fix in the track
+  for (i in (length(currenttrack@time)-1):1) {
+    if (difftime(currenttrack@time[j], currenttrack@time[i], units = "secs") < timeInterval) {
+      dropindexes <- c(dropindexes, i) #if interval is below timeInterval (1770 secs), current fix will be dropped, "j" remains the following fix in the track
+    }
+    else{
+      j <- i # else: current fix will not be dropped, but set as the new following fix "j" 
+    }
+  }
+  
+  # build new Track from data at all indexes not in 'dropindexes'
+  # but only if there are at least two of them
+  if(length(dropindexes) < length(currenttrack@time) - 1){
+    downsampled <-
+      Track(
+        STIDF(
+          sp = currenttrack@sp[-dropindexes],
+          time = currenttrack@time[-dropindexes],
+          endTime = currenttrack@endTime[-dropindexes],
+          data = currenttrack@data[-dropindexes, ]
+        )
+      )
+    return(downsampled)
+  }else if (quiet == F){
+    warning("Warning: The specified Track object is shorter than the specified time interval. No ouput created. \n")
+    return(NULL)
+  }
+}
+```
+
+## downByDropTrs
+
+Function in order to subset all `Track` objects within a specified `Tracks` object by specifying a regular time interval between data points (i.e. performing downsampling) and by using the function `downByDrop`.
+
+* Arguments:
+  + `currenttrs`: A `Tracks` object.
++ `timeInterval`: An integer value indicating a time interval [s] as target duration between data points of the `Track` object. Default is `timeInterval = 1770` (i.e. 29.5 minutes).
++ `quiet`: A logical value indicating if a warning should be printed if the specified `Track` object is shorter than the specified time interval. If `quiet = F`, a warning will be printed, if `quiet = T`, this will not happen.
+
+* Value:
+  + A list containing (1) the downsampled `Tracks` object (omitting `Track` objects that are shorter than the specified time interval) and a vector indicating the indices of the `Track` objects of the input `Tracks` object that are shorter than the specified time interval.
+
+```{r downByDropTrs2, eval = T, message = F, warning = F}
+downByDropTrs <- function(currenttrs, timeInterval = 1770, quiet = F){
+  tracklist <- lapply(currenttrs@tracks, function(x) downByDrop(x, timeInterval = timeInterval))
+  tooshort <- which(sapply(tracklist, is.null) == T)
+  tracklist <- tracklist[!sapply(tracklist, is.null)]  
+  if(length(tracklist) > 0){
+    trsgen <- Tracks(tracklist)
+    return(list(trsgen, tooshort))
+  }else if(quiet == F){
+    warning("Waring: All Track objects of the specified Tracks objects are shorter than the specified time interval.")
+  }
+}
+```
+
+## getNightTrack
+
+Function in order to get all data points of a `Track` object within a specified time interval (several hours) for each day.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. The default is `tstart = 16`.
++ `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`. The default is `tend = 20`. 
+
+* Value:
+  + the downsampled `Track` object (containing only data points within the specified time interval).
+
+```{r getNightTrack, eval = T, message = F, warning = F}
+getNightTrack <- function(currenttrack, tstart = 16, tend = 20) {
+  #get Indexes of fixes within time frame
+  nightindexes <-
+    which(hour(currenttrack@time) >= tstart &
+            hour(currenttrack@time) < tend)
+  
+  #build new Track from data at all indexes in 'nightindexes'
+  #but only if there are at least two of them
+  if(length(nightindexes)>1){
+    nighttrack <-
+      Track(
+        STIDF(
+          sp = currenttrack@sp[nightindexes],
+          time = currenttrack@time[nightindexes],
+          endTime = currenttrack@endTime[nightindexes],
+          data = currenttrack@data[nightindexes, ]
+        )
+      )
+    return(nighttrack)
+  }
+}
+```
+
+## getNightTrs
+Function to apply getNightTrack on all Tracks of a Tracks-Object.
+
+* Arguments:
+  + `currenttrs`: A `Tracks` object.
++ `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. The default is `tstart = 16`.
++ `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`. The default is `tend = 20`. 
+
+* Value:
+  + the downsampled `Tracks` object (containing only data points within the specified time interval)
+
+```{r getNightTrs, eval = T, message = F, warning = F}
+getNightTrs <- function(currenttrs, tstart = 16, tend =20 ){
+  tracklist <- lapply(currenttrs@tracks, getNightTrack, tstart=tstart, tend =tend)
+  tracklist <- tracklist[!sapply(tracklist, is.null)]  
+  if(length(tracklist) > 0){
+    trsnight <- Tracks(tracklist)
+    return(trsnight)
+  }
+}
+```
+
+
+## daynightFixesTrack
+
+Function in order to get all data points of a `Track` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) as a `SpatialPointsDataFrame`.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
++ `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+
+* Value:
+  + a `SpatialPointsDataFrame` containing all data of the slot `data` of the input `Track` object and a column `night` indicating if a data point is within the specified time interval (`night == 1`) or not (`night == 0`).
+
+```{r daynightFixesTrack, eval = T, message = F, warning = F}
+daynightFixesTrack <- function (currenttrack,
+                                tstart = 16,
+                                tend = 20) {
+  
+  #get indexes of fixes within time frame
+  nightindexes <- which(hour(currenttrack@time) >= tstart & hour(currenttrack@time) < tend)
+  
+  # get SpatialPoints of all fixes during night
+  nightfixes <- currenttrack@sp[nightindexes,]
+  nightfixes <-
+    SpatialPointsDataFrame(nightfixes, cbind(currenttrack@data[nightindexes,], data.frame(night = rep(
+      1, length(nightfixes)
+    ))))
+  
+  # get SpatialPoints of all other fixes
+  if (length(nightfixes) > 0) {
+    dayfixes <- currenttrack@sp[-nightindexes,]
+    dayfixes <-
+      SpatialPointsDataFrame(dayfixes, cbind(currenttrack@data[-nightindexes,], data.frame(night = rep(
+        0, length(dayfixes))))
+      )
+  }else{
+    dayfixes <- currenttrack@sp
+    dayfixes <-
+      SpatialPointsDataFrame(dayfixes, cbind(currenttrack@data, data.frame(night = rep(
+        0, length(dayfixes))))
+      )
+  }
+  
+  if (length(nightfixes) == 0) {
+    return(dayfixes)
+  } else if (length(dayfixes) == 0) {
+    return(nightfixes)
+  } else{
+    allfixes <- rbind(dayfixes, nightfixes)
+    return(allfixes)
+  }
+  
+}
+
+# alternative (same results, but not ordered according to night)
+daynightFixesTrack <- function (currenttrack,
+                                tstart = 16,
+                                tend = 20) {
+  
+  #get indexes of fixes within time frame
+  nightindexes <- which(hour(currenttrack@time) >= tstart & hour(currenttrack@time) < tend)
+  
+  # create SpatialPointsDataFrame with new attribute night
+  fixes.sp <- currenttrack@sp
+  fixes.data <- currenttrack@data
+  night <- rep(0, nrow(fixes.data))
+  night[nightindexes] <- 1
+  fixes.data$night <- night
+  fixes <- SpatialPointsDataFrame(fixes.sp, fixes.data)
+  
+  # return fixes
+  return(fixes)
+  
+}
+```
+
+## daynightFixesTracks
+
+Function in order to get the data points of all `Track` objects in a `Tracks` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) as a `SpatialPointsDataFrame` using the function `daynightFixesTrack`.
+
+* Arguments:
+  + `currenttracks`: A `Tracks` object.
++ `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
++ `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+
+* Value:
+  + a `SpatialPointsDataFrame` containing all data of the slot `data` of all `Track` objects in the input `Tracks` object and a column `night` indicating if a data point is within the specified time interval (`night == 1`) or not (`night == 0`).
+
+```{r daynightFixesTracks, eval = T, message = F, warning = F}
+daynightFixesTracks <- function(currenttracks,
+                                tstart = 16,
+                                tend = 20) {
+  trs_daynightfixes <-
+    do.call(
+      rbind,
+      lapply(
+        currenttracks@tracks,
+        daynightFixesTrack,
+        tstart = tstart,
+        tend = tend
+      )
+    )
+  return(trs_daynightfixes)
+}
+```
+
+## getNightConnectionsTrack
+
+Function in order to get all data points of the slot `connections` of a `Track` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) as a data frame.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
++ `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+
+* Value:
+  + a data frame representing the corresponding data points of the slot `connections` of the `Track` object within the time interval. 
+
+```{r getNightConnectionsTrack, eval = T, message = F, warning = F}
+getNightConnectionsTrack <- function(currenttrack,
+                                     tstart = 16,
+                                     tend = 20) {
+  
+  # get indexes of fixes within time frame  
+  nightindexes <- which(hour(currenttrack@time) >= tstart & hour(currenttrack@time) < tend)
+  
+  # get connection having the nightly fixes as start
+  nightconnections <- currenttrack@connections[nightindexes,]
+  
+  # extract only those connection having also a nightly fix as end (index +1)
+  nightconnections <-
+    nightconnections[is.element(strtoi(row.names(nightconnections)) + 1, nightindexes),]
+  return(nightconnections)
+}
+```
+
+## getNightMovementTracks
+
+Function in order to get the mean value for the column `distance` of the slot `connections` of all `Track` objects of a `Tracks` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) using the function `getNightConnectionsTrack`. Additionally, the function removes all data points with a value `connections$duration < 1700` and`connections$duration > 1900` (s).
+
+* Arguments:
+  + `currenttracks`: A `Tracks` object.
++ `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
++ `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+
+* Value:
+  + a numeric value representing the mean of the column `speed` of the slot `connections` of all `Track` objects of a `Tracks` object within the time interval and with a value `connections$duration > 1700` and`connections$duration < 1900` (s). 
+
+```{r getNightMovementTracks, eval = T, message = F, warning = F}
+getNightMovementTracks <- function(currenttracks, 
+                                   tstart = 16, 
+                                   tend = 20){
+  
+  # get connections
+  trs_nightconnections <- 
+    do.call(
+      rbind,
+      lapply(
+        currenttracks@tracks,
+        getNightConnectionsTrack, 
+        tstart = tstart, 
+        tend = tend
+      )
+    )
+  
+  # eliminate data points outside duration target interval
+  trs_nightconnections <- trs_nightconnections[trs_nightconnections$duration > 1700 & trs_nightconnections$duration < 1900,]
+  
+  # get mean of corresponding distance values
+  return(mean(trs_nightconnections$distance))
+}
+```
+
+## getNightSpeedTracks
+
+Function in order to get the mean value for the column `speed` of the slot `connections` of all `Track` objects of a `Tracks` object within a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) using the function `getNightConnectionsTrack`.
+
+* Arguments:
+  + `currenttracks`: A `Tracks` object.
++ `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
++ `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+
+* Value:
+  + a numeric value representing the mean of the column `speed` of the slot `connections` of all `Track` objects of a `Tracks` object within the time interval. 
+
+```{r getNightSpeedTracks, eval = T, message = F, warning = F}
+#same as above but without subsetting of durations and calculating speed
+getNightSpeedTracks <- function(currenttracks, 
+                                tstart = 16, 
+                                tend = 20){
+  
+  trs_nightconnections <- 
+    do.call(
+      rbind,
+      lapply(
+        currenttracks@tracks,
+        getNightConnectionsTrack, 
+        tstart = tstart, 
+        tend = tend
+      )
+    )
+  
+  # get mean of corresponding speed values
+  return(mean(trs_nightconnections$speed))
+}
+```
+
+## getDayConnectionsTrack
+
+Function in order to get all data points of the slot `connections` of a `Track` object outside a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) as a data frame (complementary to `getNightConnectionsTrack`).
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
++ `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+
+* Value:
+  + a data frame representing the corresponding data points of the slot `connections` of the `Track` object outside the time interval. 
+
+```{r getDayConnectionsTrack, eval = T, message = F, warning = F}
+getDayConnectionsTrack <- function(currenttrack,
+                                   tstart = 16,
+                                   tend = 20) {
+  
+  # get connection having the nightly fixes as start
+  nightconnections <-
+    getNightConnectionsTrack(currenttrack, tstart, tend)
+  
+  # get the corresponding daily fixes
+  dayconnections <-
+    currenttrack@connections[-strtoi(row.names(nightconnections)), ]
+  
+  return(dayconnections)
+}
+```
+
+## getDayMovementTracks
+
+Function in order to get the mean value for the column `distance` of the slot `connections` of all `Track` objects of a `Tracks` object outside a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) using the function `getDayConnectionsTrack`. Additionally, the function removes all data points with a value `connections$duration < 1700` and`connections$duration > 1900` (s).
+
+* Arguments:
+  + `currenttracks`: A `Tracks` object.
++ `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
++ `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+
+* Value:
+  + a numeric value representing the mean of the column `distance` of the slot `connections` of all `Track` objects of a `Tracks` object outside the time interval and with a value `connections$duration > 1700` and`connections$duration < 1900` (s). 
+
+```{r getDayMovementTracks, eval = T, message = F, warning = F}
+#function to apply getDayConnectionsTrack on all tracks of a Tracks-Object, remove connections < 1700 and >1900 secs
+#duration and return mean distance of alle remaining connections
+getDayMovementTracks <- function(currenttracks, 
+                                 tstart = 16, 
+                                 tend = 20){
+  
+  # get connections
+  trs_dayconnections <- 
+    do.call(rbind,
+            lapply(
+              currenttracks@tracks,
+              getDayConnectionsTrack, 
+              tstart = tstart, 
+              tend = tend
+            )
+    )
+  
+  # eliminate data points outside duration target interval
+  trs_dayconnections <- trs_dayconnections[trs_dayconnections$duration > 1700 & trs_dayconnections$duration < 1900,]
+  
+  # get mean of corresponding distance values
+  return(mean(trs_dayconnections$distance))
+}
+```
+
+## getDaySpeedTracks
+
+Function in order to get the mean value for the column `speed` of the slot `connections` of all `Track` objects of a `Tracks` object outside a specified time interval (several hours) for each day (intended to separate data points sampled during night and day) using the function `getDayConnectionsTrack`.
+
+* Arguments:
+  + `currenttracks`: A `Tracks` object.
++ `tstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
++ `tend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `tend` has to be larger than `tstart`.
+
+* Value:
+  + a numeric value representing the mean of the column `speed` of the slot `connections` of all `Track` objects of a `Tracks` object outside the time interval. 
+
+```{r getDaySpeedTracks, eval = T, message = F, warning = F}
+#same as above but without subsetting of durations and calculating speed
+getDaySpeedTracks <- function(currenttracks, 
+                              tstart = 16, 
+                              tend = 20){
+  
+  trs_dayconnections <- 
+    do.call(
+      rbind,
+      lapply(
+        currenttracks@tracks,
+        getDayConnectionsTrack, 
+        tstart = tstart, 
+        tend = tend
+      )
+    )
+  
+  # get mean of corresponding speed values
+  return(mean(trs_dayconnections$speed))
+}
+```
+
+## daytimeMovement
+
+Function in order to compute several summary indices (mean distance, mean speed and maximum speed between subsequent points) for a `Track` object inside or outside a specified time interval (several hours) for each day using the function `getNightConnectionsTrack`.
+
+* Arguments:
+  + `currenttrack`: A `Track` object.
++ `nightstart`: A numeric value indicating the start of the time interval [h, values between 0 and 24] 
++ `nightend`: A numeric value indicating the start of the time interval [h, values between 0 and 24]. `nightend` has to be larger than `nightstart`.
++ `night`: A logical value indicating if the computations should be performed on the data points within the time interval (`night == T`) or outside the time interval (`night == F`). Default is `night = T`.
+
+* Value:
+  + a list containing as columns:
+  1. `mean_distance`: The mean distance between subsequent data points of the `Track` object within or outside the specified time interval.
+2. `mean_speed`: The mean speed between subsequent data points of the `Track` object within or outside the specified time interval.
+3. `max_speed`: The maximum speed between subsequent data points of the `Track` object within or outside the specified time interval.
+
+```{r daytimeMovement, eval = T, message = F, warning = F}
+daytimeMovement <-
+  function(currenttrack,
+           nightstart,
+           nightend,
+           night = TRUE) {
+    
+    #call function to get nightly connections passing on the input parameters
+    currentconnections <-
+      getNightConnectionsTrack(currenttrack, nightstart, nightend)
+    # invert selection, if night==FALSE
+    if (night == FALSE) {
+      currentconnections <-
+        currenttrack@connections[-strtoi(row.names(currentconnections)),]
+    }
+    #create list with movement indicators during desired time of day
+    movement <-
+      list(
+        mean_distance = mean(currentconnections$distance),
+        mean_speed = mean(currentconnections$speed),
+        max_speed = max(currentconnections$speed)
+      )
+    return(movement)
+  }
+```
+
+## qTopology
+
+Function to determine topology for grid and quadratcount, i.e. size in x and y such that the window of the ppp can be split in an even number of quadrats,approximating a certain target edge length, e.g. 1000m. This function is used by function `pointsPerQuad` to create the cells in which to count the number of points.
+
+* Arguments:
+  + `ppp`: A `ppp` (point pattern dataset) object.
++ `targetQsize`: Target size of the quadrats to be created.
+
+* Value:
+  + A list containing the size and number of cells in x and y
+
+```{r qTopology, eval = T, message = F, warning = F}
+qTopology <- function(ppp, targetQsize) {
+  #determine next number of quadrats in x and y direction, by simple rounding
+  targetQsize <- targetQsize
+  nqx <- round((ppp$window$xrange[2] -
+                  ppp$window$xrange[1]) / targetQsize)
+  nqy <- round((ppp$window$yrange[2] -
+                  ppp$window$yrange[1]) / targetQsize)
+  #determine quadrat size using rounded number of cells
+  qsizeX <-
+    (ppp$window$xrange[2] - ppp$window$xrange[1]) / nqx
+  qsizeY <-
+    (ppp$window$yrange[2] - ppp$window$yrange[1]) / nqy
+  
+  return (list(
+    qsizeX = qsizeX,
+    qsizeY = qsizeY,
+    nqx = nqx,
+    nqy = nqy
+  ))
+}
+```
+
+## pointsPerQuad
+
+Function to determine points per cell (of a given size) in a tracks-object. Takes a `Tracks` object and a target size of the cells as input and returns a `SpatialGridDataFrame` with quadrat cells and the number of points within them. This function is used by function `extractClusters` to count the number of points within cells before determining clusters of points.
+
+* Arguments:
+  + `trs`: A `Tracks`object.
++ `qsize`: Target size of the quadrats in which to count the number of points of the `Tracks` object.
+
+* Value:
+  + A `SpatialGridDataFrame` with quadrat cells and the number of points within them
+
+```{r pointsPerQuad, eval = T, message = F, warning = F}
+pointsPerQuad <- function(trs, qsize) {
+  #transform to UTM
+  trsSP <- as(as(trs, "SpatialLines"), "SpatialPoints")
+  trsSPtrans <-
+    spTransform(
+      trsSP,
+      CRS(
+        "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+      )
+    )
+  #convert to ppp
+  trsPPP <- as(trsSPtrans, "ppp")
+  
+  #use function qTopology to determine dimensions and number of cells for grid and quadratcount
+  qtopo <- qTopology(trsPPP, qsize)
+  qsizeX <- qtopo$qsizeX
+  qsizeY <- qtopo$qsizeY
+  nqx <- qtopo$nqx
+  nqy <- qtopo$nqy
+  
+  #create SpatialGridDataFrame with number of counts of points per grid cell using quadratcount,   and with dimensions determined above
+  trsGrid <-
+    SpatialGridDataFrame(
+      GridTopology(
+        c(
+          trsPPP$window$xrange[1] + qsizeX / 2,
+          trsPPP$window$yrange[1] + qsizeY / 2
+        ),
+        c(qsizeX, qsizeY),
+        c(nqx, nqy)
+      ),
+      data.frame(count = as.numeric(matrix(
+        as.numeric(quadratcount(trsPPP, nx = nqx, ny = nqy)), nqx, nqy, byrow =
+          T
+      ))),
+      proj4string = proj4string(trsSPtrans)
+    )
+  
+  return (trsGrid)
+}
+```
+
+## extractClusters
+
+Function to extract clusters using the function `pointsPerQuad`. Takes a `Tracks` object, a cellsize (for the cells in which to count the points) and a threshold for the number of points per cell as arguments. Returns a `SpatialPolygonsDataFrame` holding the cells determined as clusters.
+
+* Arguments:
+  + `currenttracks`: A `Tracks`object.
++ `cellsize`: Desired size of the cells in which to count the points.
++ `threshold`: Threshold (number of points per cell) defining a "cluster".
+
+* Value: 
+  + A `SpatialPolygonsDataFrame` holding the cells determined as clusters
+
+```{r extractClusters, eval = T, message = F, warning = F}
+extractClusters <-
+  function(currenttracks,
+           cellsize = 1000,
+           threshold = 300) {
+    trsGrid <- pointsPerQuad(currenttracks, cellsize)
+    #convert to SpatialPolygonsDataFrame
+    trsGridSPDF <- as(trsGrid, "SpatialPolygonsDataFrame")
+    #get cells with count > threshold
+    clusters <- trsGridSPDF[which(trsGridSPDF$count > threshold), ]
+    return(clusters)
+  }
+```
+
+## searchNextVisit
+
+Function that checks whether the clusters/campsites have been visited more than the currently known visits (`times_visited`). Updates `times_visited` and determines end (latest point in cell) of current visit. This function is used by function `clusterOrder()`.
+
+* Arguments:
+  + `cells`: A `SpatialPolygonsDataFrame` holding the cells determined as clusters/campsites
++ `trs_spdf`: A `SpatialPointsDataFrame` of the household movement (as converted from `Tracks` object)
+
+* Value:
+  + `cells`: A `SpatialPolygonsDataFrame` holding the clusters/campsites with updated `times_visited`
+
+```{r searchNextVisit, eval = T, message = F, warning = F}
+searchNextVisit <- function(cells, trs_spdf) {
+  
+  #get last occurence of points in cell from the cluster data frame
+  last_in_cell <- cells$last_in_cluster 
+  
+  #get the start of current visit from the third last coloumn of data frame
+  first_of_visit <- cells@data[[ncol(cells@data) - 2]] 
+  
+  #get currently determined latest point of current visit, i.e. the second last coloumn
+  last_of_visit <- cells@data[[ncol(cells@data)-1]] 
+  
+  #get the current rank, i.e. the last coloumn
+  current_rank <- cells@data[[ncol(cells@data)]] 
+  
+  #loop through clusters by rank
+  for (i in 1:(max(current_rank, na.rm = T) - 1)) {
+    
+    # if current latest point is later in time than the earliest point of the following cluster...
+    if (last_in_cell[which(current_rank == i)] > first_of_visit[which(current_rank == i +
+                                                                      1)]) {
+      
+      #...the cluster has been visited again later, so set times_visited + 1
+      cells$times_visited[which(current_rank == i)] <-
+        cells$times_visited[which(current_rank == i)] + 1 
+      
+      # also determine end of current visit as the latest point in the cluster that is still earlier than the earliest point in the following cluster
+      last_of_visit[which(current_rank == i)] <-
+        max(na.omit(trs_spdf$time[trs_spdf$clrank == i &
+                                    trs_spdf$time < first_of_visit[which(current_rank == i + 1)]])) 
+      # set newVisit to TRUE
+      cells$newVisit[which(current_rank == i)] <- TRUE
+    }
+    else{
+      #set newVisit to FALSE
+      cells$newVisit[which(current_rank == i)] <- FALSE
+    }
+  }
+  
+  #the cluster which is last in line of 1st visits, always has only one visit
+  cells$newVisit[which(current_rank == max(current_rank, na.rm = T))] <- FALSE 
+  
+  #update end time of current visit (second last coloumn) with newly determined last last_of_visit
+  cells@data[[ncol(cells@data)-1]] <- last_of_visit 
+  
+  
+  return(cells)
+}
+```
+
+## findStarts
+
+Function determining the start date/time of the latest visit in a cluster/campsite if an additional visit has been detected by `searchNextVisit()`. `cells` should be object of clusters/campsites as returned by `searchNextVisit()`. This function is used by function `clusterOrder()`.
+
+* Arguments:
+  + `cells`: A `SpatialPolygonsDataFrame` holding the cells determined as clusters/campsites
++ `trs_spdf`: A `SpatialPointDataFrame` of the household movement (as converted from `Tracks` object)
+
+* Value: 
+  + `next_start`: A vector of `POSIXct` objects holding the starts (first points) of the additional visits.
+
+```{r findStarts, eval = T, message = F, warning = F}
+findStarts <- function(cells, trs_spdf) {
+  #get the end of previous visit from the second last coloumn of data frame
+  last_of_previous <- cells@data[[ncol(cells@data)-1]] 
+  
+  #create POSIXct vector for next start values (using visit1_start as dummy values)
+  next_start <- cells$visit1_start 
+  
+  #get the current rank, i.e. the last coloumn
+  current_rank <- cells@data[[ncol(cells@data)]] 
+  
+  #loop through clusters following rank
+  for (i in 1:(max(current_rank, na.rm = T))) {
+    
+    # if new visit has been detected before:
+    if (cells$newVisit[which(current_rank == i)]  == TRUE) {
+      
+      #determine next_start within cluster as the earliest point that is in that cluster and later than the end of the previous visit
+      next_start[which(current_rank == i)] <- 
+        min(na.omit(trs_spdf$time[trs_spdf$clrank == i &
+                                    trs_spdf$time > last_of_previous[which(current_rank == i)]])) 
+      
+    } else {
+      next_start[which(current_rank == i)] <- NA
+    }
+  } 
+  
+  return(next_start)
+}
+```
+
+## clusterOrder
+
+Function that identifies campsites (clusters of points) of a household (`Tracks` object) and for each cluster/campsite determines the number of visits, the order in which the clusters have been visited, and the start and end times (first and last point) of each visits. Uses function `extractClusters()` to detect the campsites. Also uses functions `searchNextVisit()` and `findStarts()` described above.
+
+* Arguments:
+  + `trs`: A `Tracks`object.
++ `cellsize`: Desired size of the cells in which to count the points when searching clusters/campsites. Passed on to function `extractClusters()`. 
++ `threshold`: Threshold (number of points per cell) defining a "cluster". Passed on to function `extractClusters()`.
+
+
+* Value: 
+  + `clusters`: A `SpatialPolygonsDataFrame` holding the cells determined as clusters including data on the number of visits per cluster, start and end times etc.
+
+```{r clusterOrder, eval = T, message = F, warning = F}
+clusterOrder <- function(trs, cellsize = 800, threshold = 20) {
+  
+  ##prepare data by extracting clusters and transforming Tracks object to SPDF to allow overlaying with polygons of clusters:
+  clusters <- extractClusters(trs, cellsize = cellsize, threshold = threshold)
+  clusters$clid <- rownames(clusters@data) # save id of cell in dataframe as "clid"
+  trs_spdf <- spTransform(as(trs, "SpatialPointsDataFrame"), CRSobj = clusters@proj4string)
+  trs_spdf@data$clid <- over(trs_spdf, clusters)$clid #assign clid of corresponding cluster to each point
+  
+  ##begin ordering
+  #detect and rank first visit of each cluster/campsite:
+  
+  #determine first visit for each cluster
+  visit1_start <- aggregate(trs_spdf["time"], by = clusters, FUN = min)$time 
+  
+  # rank cluster regarding first visit
+  visit1_rank <- rank(visit1_start) 
+  
+  #determine latest point of the track within each cluster
+  clusters$last_in_cluster <- aggregate(trs_spdf["time"], by = clusters, FUN = max)$time  
+  
+  #temporarily set end of first visit to the last point in cluster (will be updated during ordering below)
+  visit1_end <- clusters$last_in_cluster 
+  
+  clusters$times_visited <- 1
+  
+  # add start, end and rank of visit to dataframe of the clusters/campsites
+  clusters@data <- cbind(clusters@data, visit1_start, visit1_end, visit1_rank) 
+  remove(visit1_rank, visit1_start, visit1_end)
+  
+  # assign rank of cluster to corresponding points of trs_spdf
+  trs_spdf@data$clrank <- over(trs_spdf, clusters)$visit1_rank 
+  
+  #create vector for holding information on whether a new visit has been detected
+  newVisit <- rep(TRUE, length(clusters$visit1_rank)) 
+  
+  #attach information on new visits to the first coloumn in order to keep the last coloumn for the end of the corresponding visit
+  clusters@data <- cbind(newVisit,clusters@data) 
+  
+  #find furhter visits:
+  
+  i = 2 #index for naming the coloumns
+  
+  #while there were at least two clusters with additional visits to be ordered in the previous iteration, continue. Otherwised ordering is finished
+  while (length(which(clusters$newVisit == TRUE))>1) { 
+    
+    #in each cluster look for visits later than the currently known ones:
+    clusters <- searchNextVisit(clusters, trs_spdf) 
+    
+    #if additional visits were found, find starts and ends of these visits, whereas ends are defined as latest points in each cluster (in the next iteration it will be checked,whether they belong to another visit of the same cluster)
+    if (any(clusters$newVisit == TRUE)) { 
+      clusters@data <-
+        cbind(
+          clusters@data,
+          findStarts(clusters, trs_spdf),
+          aggregate(trs_spdf["time"], by = clusters, FUN = max)$time
+        )
+      
+      #set rows without additional visits to NA
+      clusters@data[[ncol(clusters@data)]][is.na(clusters@data[[ncol(clusters@data)-1]])] <-NA 
+      
+      #rank clusters according to start of current visit and add rank to data frame
+      rank <- rank(clusters@data[[ncol(clusters@data)]]) 
+      rank[which(is.na(clusters@data[[ncol(clusters@data)]]))] <- NA
+      clusters@data <- cbind(clusters@data, rank)
+      
+      #rename coloumns
+      names(clusters@data)[ncol(clusters@data)] <- paste("visit",i,"_rank",sep="")
+      names(clusters@data)[ncol(clusters@data)-1] <- paste("visit",i,"_end",sep="")
+      names(clusters@data)[ncol(clusters@data)-2] <- paste("visit",i,"_start",sep="")
+      i <- i+1
+    }
+  }
+  
+  print("Finished")
+  plot(trs_spdf@data$time, trs_spdf@data$clrank, type = "l")
+  return(clusters)
+}
+
+```
+
+## elevDiff
+
+## abselevDiff
+
+## exDataTracks
+
+Function in order to extract the slot `data` for all `Track` objects of a `Tracks object` and to add the slot `time` for all `Track` objects of a `Tracks object` as a column to the resulting `data.frame` object.
+
+* Arguments:
+  + `trs`: A `Tracks`object.
+
+* Value: 
+  + `list` containing the `data.frame` objects representing the slot `data` and `time` (binded together as `data.frame`) of the `Track` objects of the specified `Tracks` object as elements.
+
+```{r exDataTracks, eval = T, message = F, warning = F}
+exDataTracks <- function(trs
+){
+  
+  require(lubridate)
+  require(spacetime)
+  
+  df <- lapply(trs@tracks, function(x){
+    df <- x@data
+    df$time <- as.POSIXct(x@time)
+    df
+  })
+  
+  df1 <- df[[1]]
+  for(i in c(2:length(df))){
+    df1 <- merge(df1, df[[i]], all = T)
+  }
+  
+  df1 <- df1[order(df1$time),]
+  
+  return(df1)
+}
+```
+
+## locationsTracks
+
+Function in order to identify distinct locations in a `Tracks` object and the order of the visit of these locations and in order to compute various variables concerning the visit of a specific location (mean latitude, mean longitude, mean elevation, residence time, arrival time, departure time, speed). The identification of locations is based on the identification of clusters of fixes by identifying intersecting buffers around each fix. Campsites are distinguished from other locations by a specified minimal residence time.
+
+* Arguments:
+  + `trs`: A `Tracks`object.
++ `radius`: The radius of the buffers computed around each value [m] which are used for clustering values to locations. Default is `radius = 200` [m].
++ `t.min`: The minimum residence time at a specific location [s] which is used to classify locations as campsites (if the residence time is larger than `t.min`) in contrast to other locations. The default is `t.min = 345600`, i.e. 4 days.
+
+* Value: 
+  + A `Tracks` object containing the following columns within the data slot:
+  1. `location`: An integer value discriminating different locations.
+2. `res.time`: The residence time at a specific location [s].
+3. `campsite`: A logical value indicating whether a specific visit of a location is considered as campsite or not (based on `t.min`).
+4. `arrival.time`: A character representing the arrival time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`.
+5. `departure.time`: A character representing the departure time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`.
+6. `lat`: A numeric value representing the centroids for the latitude of fixes corresponding to a specific visit of a location [?].
+7. `lon`: A numeric value representing the centroids for the longitude of fixes corresponding to a specific visit of a location [?].
+8. `alt`: A numeric value representing the mean elevation value of fixes corresponding to a specific visit of a location [m].
+9. `speed`: A numeric value indicating the mean speed at the time fixes were taken for fixes corresponding to a specific visit of a location [m s<sup>-1</sup>].
+
+
+```{r locationsTracks, eval = T, message = F, warning = F}
+locationsTracks <- function(trs,
+                            radius = 200,
+                            t.min = 345600
+){
+  
+  # get Tracks data
+  trs.df <- exDataTracks(trs)
+  
+  # convert track to SpatialPointsDataFrame and transform to UTM
+  trsSP <- as(as(trs, "SpatialLines"), "SpatialPoints")
+  trsSP <-
+    spTransform(
+      trsSP,
+      CRS(
+        "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+      )
+    )
+  trsSP <- SpatialPointsDataFrame(trsSP, trs.df, match.ID = F)
+  
+  # indices with points that have not been assigned to a cluster yet
+  leftover <- c(1:length(trsSP))
+  leftover.old <- leftover
+  first <- T
+  
+  while(length(leftover) != 0){
+    
+    # subset points for buffering (1%)
+    # ind.select <- leftover[seq(1, length(leftover), by = length(leftover)*0.01)]
+    ind.select <- leftover[sample(c(1:length(leftover)), size = ceiling(length(leftover)*0.01))]
+    
+    # compute buffer
+    buffer.trs <- gBuffer(trsSP[ind.select,], width = radius, quadsegs = 25)
+    
+    # get intersecting points
+    a.new <- over(trsSP, disaggregate(buffer.trs))
+    
+    if(first == T){
+      # get intersecting points
+      buffer.trs.tot <- buffer.trs
+      a.tot <- a.new
+      
+      first = F
+    }
+    
+    # define points that were inside a buffer at any loop run
+    a.tot[which(is.na(a.tot))] <- a.new[which(is.na(a.tot))]
+    
+    # define total buffer range
+    buffer.trs.tot <- gUnion(buffer.trs, buffer.trs.tot)
+    
+    # subset leftover
+    if(length(which(is.na(a.tot))) != 0){
+      leftover <- leftover.old[which(is.na(a.tot))]
+    }else{
+      leftover = NULL
+      
+      a.tot <- over(trsSP, disaggregate(buffer.trs.tot))
+    }
+    
+  }
+  
+  # add variable to trsSP
+  trsSP$campsites <- a.tot
+  
+  if(length(unique(a.tot)) == 1){
+    warning("Only one location identified!")
+    return(NULL)
+  }
+  
+  # find order of campsite visits
+  order.campsite.vis <- 1
+  for(fi in c(1:length(a.tot))){
+    if(a.tot[fi] != a.tot[order.campsite.vis[length(order.campsite.vis)]]){
+      order.campsite.vis <- c(order.campsite.vis, fi)
+    }
+    if(fi == length(a.tot) && order.campsite.vis[length(order.campsite.vis)] != fi){
+      order.campsite.vis <- c(order.campsite.vis, fi)
+    }
+  }
+  
+  # create a list with respective indices
+  order.campsite.vis <- rbind(order.campsite.vis[-length(order.campsite.vis)], order.campsite.vis[-1])
+  order.campsite.vis <- list(apply(order.campsite.vis, 2, function(x){x[1]:(x[2]-1)}))[[1]]
+  
+  # calculate various variables connected to campsites
+  campsites.var <- data.frame(location = trsSP$campsites[sapply(order.campsite.vis, function(x){x[1]})],
+                              res.time = sapply(order.campsite.vis, function(x){difftime(trsSP$time[range(x)[2]], trsSP$time[range(x)[1]], units = "sec")}))
+  
+  # define a variable classifying locations as campsites or short term visits
+  campsites.var$campsite <- rep(T, nrow(campsites.var))
+  campsites.var$campsite[which(campsites.var$res.time < t.min)] <- F
+  
+  # get arrival and departure time
+  campsites.var$arrival.time <- sapply(order.campsite.vis, function(x){as.character(trsSP$time[x[1]])})
+  campsites.var$departure.time <- sapply(order.campsite.vis, function(x){as.character(trsSP$time[x[length(x)]])})
+  
+  # get mean position data for each location visit
+  centr.coords <- data.frame()
+  for(visit_i in c(1:length(order.campsite.vis))){
+    
+    centr.coords <- rbind(centr.coords, apply(matrix(trsSP@coords[order.campsite.vis[[visit_i]],], ncol = 2), 2 , mean))
+    
+  }
+  centr.coords$alt <- sapply(order.campsite.vis, function(x){mean(trsSP$HEIGHT[x])})
+  names(centr.coords) <- c("lon", "lat", "alt")
+  
+  # convert to SP
+  centr.coords <- SpatialPoints(centr.coords[,-3], proj4string = CRS(proj4string(trsSP)))
+  
+  # transform back to WGS84 longitude latitude
+  a <- spTransform(centr.coords, trs@tracks[[1]]@sp@proj4string)
+  
+  # add variables to campsites.var
+  campsites.var$lon <- a@coords[,1]
+  campsites.var$lat <- a@coords[,2]
+  campsites.var$alt <- sapply(order.campsite.vis, function(x){mean(trsSP$HEIGHT[x])})
+  
+  # get mean speed at each location visit
+  campsites.var$speed <- sapply(order.campsite.vis, function(x){mean(trsSP$SPEED[x])})
+  
+  # reorder indices of locations (according to arrival time)
+  done <- NULL
+  iter <- 1
+  location.new <- rep(0, nrow(campsites.var))
+  for(i in c(1:nrow(campsites.var))){
+    if(i %in% done){
+      next()
+    }else{
+      done <- c(done, which(campsites.var$location == campsites.var$location[i]))
+      location.new[which(campsites.var$location == campsites.var$location[i])] <- iter
+      iter <- iter+1
+    }
+  }
+  campsites.var$location <- location.new
+  
+  # create SpatialPointsDataFrame from campsites.var
+  campsites.var1 <- campsites.var
+  campsites.var <- SpatialPoints(coords = data.frame(lon = campsites.var$lon, lat = campsites.var$lat), proj4string = CRS(
+    "+proj=longlat +zone=46 +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"
+  ))
+  campsites.var <-
+    spTransform(
+      campsites.var,
+      CRS(
+        "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+      )
+    )
+  
+  
+  
+  # create Track object from campsites.var
+  campsites.var <- Track(STIDF(sp = campsites.var, time = as.POSIXct(campsites.var1$arrival.time) , data = campsites.var1, endTime = as.POSIXct(campsites.var1$departure.time)))
+  
+  return(campsites.var)
+}
+```
+
+## summaryIndicators1
+
+Function in order to compute various summary indicators for the movement of herders, solely based on a `Tracks` object. The function uses the output of the function `locationsTracks` (i.e. is based on a `Tracks` object). Therefore, movement summary indicators are solely based on identified locations, i.e. distances represent the linear distances between the locations.  
+
+* Arguments:
+    + `trsloc`: A `Tracks`object (as returned by `locationsTracks`).
+    + `time`: A `POSIXct` vector of length two specifying a target time interval for which to compute the summary indicators. `time[1]` represents the start time point, `time[2]` represents the end time point. All locations with `trsloc$departure.time >= time[1]` and `trsloc$arrival.time <= time[2]` will be considered. If `time = NULL`, no temporal subsetting of the data is performed. Default is `time = NULL`.
+    + `drought.r`: A `RasterStack` or `Rasterbrick` object with information on drought conditions (more details have to be provided if the function to evaluate drought conditions is finished and tested). If not provided (i.e. `drought.r = NULL`), no summary indicators related to drought conditions will be computed. Default is `drought.r = NULL`.
+    + `dzud.r`: A `RasterStack` or `Rasterbrick` object with information on dzud conditions (more details have to be provided if the function to evaluate drought conditions is finished and tested). If not provided (i.e. `dzud.r = NULL`), no summary indicators related to drought conditions will be computed. Default is `dzud.r = NULL`.
+    + `landcover`: A `SpatialPointsDataFrame` object with information on the landcover type. If not provided (i.e. `landcover = NULL`), no summary indicators related to drought conditions will be computed. Default is `landcover = NULL`.
+    + `ndvi.r`: A `RasterStack` or `Rasterbrick` object with information on dzud conditions (more details have to be provided if the function to evaluate drought conditions is finished and tested). If not provided (i.e. `ndvi.r = NULL`), no summary indicators related to drought conditions will be computed. Default is `ndvi.r = NULL`.
+    + `dgm.r`: A `RasterStack` or `Rasterbrick` object with information on the landscape elevation (digital ground model). If not provided (i.e. `dgm.r = NULL`), elevation differences will be computed as difference between the altitude of two adjacent campsite locations. Default is `dgm.r = NULL`. (Currently not supported because it is unclear if distances based on linear distances between adjacent fixes are more precise than linear distances between campsites).
+
+* Value: 
+    + `list` containing the following elements:
+        1. `distance.tot`: A numeric value indicating the total linear distance [m] between adjacent camspites. 
+        2. `alt.tot`: A numeric value indicating the the total altitudinal difference [m] between adjacent campsites, either computed from the campsite locations (if `dgm.r = NULL`) or from the values of a DGM along a straight line between the campsites (if `dgm.r != NULL`).
+        3. `campsites.time.tot`: A numeric value indicating the total time spend within campsites [s], i.e. the sum of the intervals between arrival at and departure from a campsite for all campsites. If `time != NULL`, the residence time at the first and last campsite are conmputed from the difference between `time[1]` and the departure time for the first campsite and the difference between `time[2]` and the arrival time for the last campsite, respectively.
+        4. `nocampsites.time.tot`: A numeric value indicating the total time spend between campsites [s] as: `as.numeric(difftime(time[2], time[1], units = "secs")) - campsites.time.tot`.
+        5. `no.campsites.tot`: A numeric value indicating the total number of unique campsites (i.e. neglecting repeated visits or counting locations respectively). 
+        6. `no.repeated.visits.tot`: A numeric value indicating the total number of repeated visits for all unique campsites.
+        7. `dist.max.tot`: A numeric value indicating the maximum distance [m] between two adjacent campsites.
+     
+* Issues:
+    + The function will be extended for the use with outputs from `extractClusters`.
+
+
+```{r summaryIndicators1, eval = T, message = F, warning = F}
+summaryIndicators1 <- function(trsloc, time = NULL, drought.r = NULL, dzud.r = NULL, landcover = NULL, ndvi.r = NULL, dgm.r = NULL){
+  
+  # load packages
+  
+  ## extract data (no additional steps are required to adapt different data structures to the function)
+  
+  # get ids of campsites
+  id <- trsloc@data$location
+  
+  # get longitude of campsites
+  lon <- trsloc@data$lon
+
+  # get latitude of campsites
+  lat <- trsloc@data$lat
+  
+  # get altitude of campsites
+  alt <- trsloc@data$alt
+  
+  # get arrival time at campsites
+  arrival.time <- as.POSIXct(trsloc@data$arrival.time)
+  
+  # get departure time from campsites
+  departure.time <- as.POSIXct(trsloc@data$departure.time)
+  
+  # get residence time within campsites [s]
+  residence.time <- trsloc@data$res.time
+  
+  # get distances between campsites
+  distances.campsites <- trsloc@connections$distance
+  
+  # merge data in a dataframe
+  df <- data.frame(id = id, lon = lon, lat = lat, alt = alt, arrival.time = arrival.time, departure.time = departure.time, residence.time = residence.time)
+  
+  
+  # (optionally) subset time window to consider
+  if(is.null(time) == F){
+    
+    # define index to subset the data
+    subset.time <- which(difftime(df$departure.time, time[1]) >= 0 & difftime(df$arrival.time, time[2]) <= 0)
+    
+    # subset the data
+    df <- df[subset.time,]
+    distances.campsites <- distances.campsites[subset.time[which(subset.time <= length(distances.campsites))]]
+  }else{
+    time <- c(df$arrival.time[1], df$departure.time[nrow(df)])
+  }
+  
+  
+  ## summary indicators
+  
+  # total distance covered
+  distance.tot <- sum(distances.campsites)  
+  
+  # total elevation covered
+  if(is.null(dgm.r)){
+    alt.tot <- sum(df$alt) 
+  }else{
+    
+  }
+  
+  # total time spend within campsites
+  campsites.time.tot <- sum(as.numeric(difftime(df$departure.time[1], time[1], units = "secs")), df$residence.time[2:(nrow(df)-1)], as.numeric(difftime(df$arrival.time[nrow(df)], time[2], units = "secs")))
+  
+  # total time spend not in campsites
+  nocampsites.time.tot <- as.numeric(difftime(time[2], time[1], units = "secs")) - campsites.time.tot
+  
+  # total number of different campsites
+  no.campsites.tot <- length(unique(df$id))
+   
+  # get the total number of repeated visits
+  no.repeated.visits.tot <- length(which(duplicated(df$id) == T))
+  
+  # maximum distance between adjacent campsites
+  dist.max.tot <- max(distances.campsites)
+  
+  # merge results in a list
+  list.summary <- list(
+    distance.tot = distance.tot,
+    alt.tot = alt.tot,
+    campsites.time.tot = campsites.time.tot,
+    nocampsites.time.tot = nocampsites.time.tot,
+    no.campsites.tot = no.campsites.tot,
+    no.repeated.visits.tot = no.repeated.visits.tot,
+    dist.max.tot = dist.max.tot
+    
+  )
+  
+  # return result
+  return(list.summary)
+  
+}
+```
+
+## summaryIndicators2
+
+Function in order to compute various summary indicators for the movement of herders, based on a `Tracks` object and different `RasterBrick` or `RasterStack` objects from which values are extracted. The function uses the output of the function `locationsTracks` (i.e. is based on a `Tracks` object). Therefore, movement summary indicators are solely based on identified locations, i.e. distances represent the linear distances between the locations.  
+
+* Arguments:
+    + `trsloc`: A `Tracks`object (as returned by `locationsTracks`).
+    + `time`: A `POSIXct` vector of length two specifying a target time interval for which to compute the summary indicators. `time[1]` represents the start time point, `time[2]` represents the end time point. All locations with `trsloc$departure.time >= time[1]` and `trsloc$arrival.time <= time[2]` will be considered. If `time = NULL`, no temporal subsetting of the data is performed. Default is `time = NULL`.
+    + `drought.r`: A `RasterStack` or `Rasterbrick` object with information on drought conditions (more details have to be provided if the function to evaluate drought conditions is finished and tested). If not provided (i.e. `drought.r = NULL`), no summary indicators related to drought conditions will be computed. Default is `drought.r = NULL`.
+    + `dzud.r`: A `RasterStack` or `Rasterbrick` object with information on dzud conditions (more details have to be provided if the function to evaluate drought conditions is finished and tested). If not provided (i.e. `dzud.r = NULL`), no summary indicators related to drought conditions will be computed. Default is `dzud.r = NULL`.
+    + `landcover`: A `SpatialPointsDataFrame` object with information on the landcover type. If not provided (i.e. `landcover = NULL`), no summary indicators related to drought conditions will be computed. Default is `landcover = NULL`.
+    + `ndvi.r`: A `RasterStack` or `Rasterbrick` object with information on dzud conditions (more details have to be provided if the function to evaluate drought conditions is finished and tested). If not provided (i.e. `ndvi.r = NULL`), no summary indicators related to drought conditions will be computed. Default is `ndvi.r = NULL`.
+    + `dgm.r`: A `RasterStack` or `Rasterbrick` object with information on the landscape elevation (digital ground model). If not provided (i.e. `dgm.r = NULL`), elevation differences will be computed as difference between the altitude of two adjacent campsite locations. Default is `dgm.r = NULL`. (Currently not supported because it is unclear if distances based on linear distances between adjacent fixes are more precise than linear distances between campsites).
+
+* Value: 
+    + `list` containing the following elements:
+        1. `distance.tot`: A numeric value indicating the total linear distance [m] between adjacent camspites. 
+       
+     
+* Issues:
+    + The function will be extended for the use with outputs from `extractClusters`.
+
+
+```{r summaryIndicators2, eval = T, message = F, warning = F}
+summaryIndicators2 <- function(trsloc, time = NULL, drought.r = NULL, dzud.r = NULL, landcover = NULL, ndvi.r = NULL, dgm.r = NULL){
+  
+  # load packages
+  
+  ## extract data (no additional steps are required to adapt different data structures to the function)
+  
+  # get ids of campsites
+  id <- trsloc@data$location
+  
+  # get longitude of campsites
+  lon <- trsloc@data$lon
+
+  # get latitude of campsites
+  lat <- trsloc@data$lat
+  
+  # get altitude of campsites
+  alt <- trsloc@data$alt
+  
+  # get arrival time at campsites
+  arrival.time <- as.POSIXct(trsloc@data$arrival.time)
+  
+  # get departure time from campsites
+  departure.time <- as.POSIXct(trsloc@data$departure.time)
+  
+  # get residence time within campsites [s]
+  residence.time <- trsloc@data$res.time
+  
+  # get distances between campsites
+  distances.campsites <- trsloc@connections$distance
+  
+  # merge data in a dataframe
+  df <- data.frame(id = id, lon = lon, lat = lat, alt = alt, arrival.time = arrival.time, departure.time = departure.time, residence.time = residence.time)
+  
+  
+  # (optionally) subset time window to consider
+  if(is.null(time) == F){
+    
+    # define index to subset the data
+    subset.time <- which(difftime(df$departure.time, time[1]) >= 0 & difftime(df$arrival.time, time[2]) <= 0)
+    
+    # subset the data
+    df <- df[subset.time,]
+    distances.campsites <- distances.campsites[subset.time[which(subset.time <= length(distances.campsites))]]
+  }else{
+    time <- c(df$arrival.time[1], df$departure.time[nrow(df)])
+  }
+  
+  
+  ## summary indicators
+  
+  # total distance covered
+  distance.tot <- sum(distances.campsites)  
+  
+  # total elevation covered
+  if(is.null(dgm.r)){
+    alt.tot <- sum(df$alt) 
+  }else{
+    
+  }
+  
+  # total time spend within campsites
+  campsites.time.tot <- sum(as.numeric(difftime(df$departure.time[1], time[1], units = "secs")), df$residence.time[2:(nrow(df)-1)], as.numeric(difftime(df$arrival.time[nrow(df)], time[2], units = "secs")))
+  
+  # total time spend not in campsites
+  nocampsites.time.tot <- as.numeric(difftime(time[2], time[1], units = "secs")) - campsites.time.tot
+  
+  # total number of different campsites
+  no.campsites.tot <- length(unique(df$id))
+   
+  # get the total number of repeated visits
+  no.repeated.visits.tot <- length(which(duplicated(df$id) == T))
+  
+  # maximum distance between adjacent campsites
+  dist.max.tot <- max(distances.campsites)
+  
+  # drought related indicators
+  if(is.null(drought.r) == F){
+    
+  }else{
+    
+  }
+  
+  # dzud related indicators
+  if(is.null(dzud.r) == F){
+    
+  }else{
+    
+  }
+  
+  # landcover related indicators
+  if(is.null(landcover) == F){
+    
+  }else{
+    
+  }
+  
+  # ndvi related indicators
+  if(is.null(ndvi.r) == F){
+    
+  }else{
+    
+  }
+  
+  # convert values to SpatialPoints
+  
+  # merge results in a list
+  list.summary <- list(
+    distance.tot = distance.tot,
+    alt.tot = alt.tot,
+    campsites.time.tot = campsites.time.tot,
+    nocampsites.time.tot = nocampsites.time.tot,
+    no.campsites.tot = no.campsites.tot,
+    no.repeated.visits.tot = no.repeated.visits.tot,
+    dist.max.tot = dist.max.tot
+    
+  )
+  
+  # return result
+  return(list.summary)
+  
+}
+```
+
+## FixesForDays
+
+Function in order to identify the days within a specified time period, for which data points are available within a specified `Tracks` object.
+
+* Arguments:
+  + `trs`: A `Tracks`object.
++ `time`: A `POSIXct` vector with the first element representing the start value of the respective time interval and the second element representing the end value of the respective time interval. The format is `"%Y-%m-%d"`.
+
+* Value: 
+  + An integer `vector` of the length equal the number of days within the time interval specified by `time` with `1` representing that at least one data point is available for a day and `0` that this is not the case.
+
+```{r FixesForDays, eval = T, message = F, warning = F}
+FixesForDays <- function(trs,
+                         time
+){
+  
+  # get Tracks data
+  trs.df <- exDataTracks(trs)
+  
+  # get number of days within the time interval specified by time
+  days <- difftime(time[2], time[1], units = "days")
+  
+  # get time interval
+  time1 <- strftime(seq(from = time[1], to = time[2], by = 24*60*60), format = "%Y-%m-%d")
+  
+  print(days)
+  
+  # create vector to store results in
+  fix.pres <- rep(0, days)
+  
+  # extract time information from trs
+  trs.time <- unique(strftime(trs.df$time, format = "%Y-%m-%d"))
+  
+  # identify present data
+  for(day_i in c(1:days)){
+    
+    if(time1[day_i] %in% trs.time){
+      fix.pres[day_i] <- 1
+    }
+    
+  }
+  
+  # return result
+  return(fix.pres)
+  
+}
+```
+
+## FixesForDaysTrColl
+
+Function in order to identify the days within a specified time period, for which data points are available within all `Tracks` objects within a specified `TracksCollection` object. The function is a wrapper for `FixesForDays`
+
+* Arguments:
+  + `trscoll`: A `TracksCollection`object.
++ `time`: A `POSIXct` vector with the first element representing the start value of the respective time interval and the second element representing the end value of the respective time interval. The format is `"%Y-%m-%d"`.
++ `cores`: number of cores to use in parallel computing. Default is `cores = 1`.
+
+* Value: 
+  + An integer `vector` of the length equal the number of days within the time interval specified by `time` with `1` representing that at least one data point is available for a day and `0` that this is not the case.
+
+```{r FixesForDaysTrColl, eval = T, message = F, warning = F}
+FixesForDaysTrColl <- function(trscoll,
+                               time,
+                               cores = 1
+){
+  
+  # load packages
+  require("parallel")
+  require("doParallel")
+  
+  # setup cluster
+  cl <- makeCluster(cores, outfile="", type = "PSOCK")
+  registerDoParallel(cl)
+  clusterCall(cl, function(){library("doParallel")})
+  clusterExport(cl = cl, varlist = list("exDataTracks", "FixesForDays", "trscoll", "time"), envir=environment())
+  
+  fix.pres <- parLapply(cl, trscoll@tracksCollection, fun = function(x){FixesForDays(trs = x, time)})
+  
+  # stop cluster
+  stopCluster(cl)
+  
+  # return result
+  return(fix.pres)
+  
+}
+```
+
+-----------------------------------------------------
+  
+  ## mergeTracks
+  
+  unction in order to merge the `Track` objects of a `Tracks` Object into one signular file.
+
+* Arguments:
+  + `tracks`: A `Tracks`object.
+
+* Value: 
+  + A `Track` object containing the merged `Track` objects of the input `Tracks` object.
+
+```{r mergeTracks, eval = T, message = F, warning = F}
+mergeTracks <- function(tracks){
+  
+  # extract data
+  df <- exDataTracks(trs = tracks)
+  
+  # extract spatial data
+  trsSP <- as(as(tracks, "SpatialLines"), "SpatialPoints")
+  
+  # create Track object
+  new.track <- Track(STIDF(sp = trsSP, time = as.POSIXct(df$time)[-length(df$time)] , data = df, endTime = as.POSIXct(df$time)[-1]))
+  
+  # return result
+  return(new.track)
+  
+}
+```
+
+## mergeTracksCollection
+
+Function in order to apply `mergeTracks` to a TracksCollection object.
+
+* Arguments:
+  + `trackscollection`: A `TrackCollection`object.
++ `cores`: The number of cores to use in parallel computation. Default is `cores = 1`.
++ `clcall`: Additional arguments exported to `clusterCall` (e.g. in order to supply alternative paths to look packages for). Default is `clcall = NULL`.
+
+* Value: 
+  + A `Tracks` object containing the merged `Track` objects of all former `Tracks` objects of the input `TracksCollection` object.
+
+```{r mergeTracksCollection, eval = T, message = F, warning = F}
+mergeTracksCollection <- function(trackscollection, cores = 1, clcall = NULL){
+  
+  # load packages
+  require(doParallel)
+  
+  if(is.null(cores) == F){
+    
+    # set up cluster
+    cl <- makeCluster(cores, outfile="", type = "PSOCK")
+    registerDoParallel(cl)
+    if(is.null(clcall) == F){
+      clusterCall(cl, clcall)
+    }
+    clusterExport(cl = cl, varlist = list("exDataTracks", "mergeTracks", "trackscollection"), envir=environment())
+    
+    new.tracks <- parLapply(cl, trackscollection@tracksCollection, fun = function(x){mergeTracks(tracks = x)})
+    
+    # stop cluster
+    stopCluster(cl)
+    
+  }else{
+    new.tracks <- lapply(trackscollection@tracksCollection, fun = function(x){mergeTracks(tracks = x)})
+  }
+  
+  # convert new.tracks to Tracks object
+  new.tracks <- Tracks(new.tracks)
+  
+  # return result
+  return(new.tracks)
+  
+}
+```
+
+## reorganizeTracks
+
+Function in order to reorganize a `Tracks` object with several `Track` objects covering roughly the same time period by assigning data points to the same overall time intervaland including gaps as new data points within each `Track` object. If there are more than one data point per interval and `Track` object, only the first data point within this interval is retained.
+
+* Arguments:
+  + `tracks`: A `Tracks`object.
++ `interval`: numeric value indicating the length of the time interval to assign all data values to [s]. Default is `interval = 60*30`, i.e. 30 minutes.
+`tz`: A character vector indicating the time zone the temporal information orresponds to. Default is `tz = "GMT"`.
++ `cores`: The number of cores to use in parallel computation. Default is `cores = 1`.
++ `clcall`: Additional arguments exported to `clusterCall` (e.g. in order to supply alternative paths to look packages for). Default is `clcall = NULL`.
+
+* Value: 
+  + A `Tracks` object containing the reorganized `Track` objects.
+
+```{r reorganizeTracks, eval = T, message = F, warning = F}
+reorganizeTracks <- function(tracks, interval = 60*30, tz = "GMT", cores = 1, clcall = NULL){
+  
+  # load packages
+  require(lubridate)
+  require(doParallel)
+  require(sp)
+  require(trajectories)
+  require(spacetime)
+  require(rgdal)
+  
+  # define vector with time points equally spaced according to interval
+  tstart <- as.POSIXct(min(sapply(tracks@tracks, function(x){min(as.POSIXct(x@time))})), origin = "1970-01-01 00:00:00", tz = tz)
+  tstart <- floor_date(tstart, unit = "hours")
+  tend <- as.POSIXct(max(sapply(tracks@tracks, function(x){max(as.POSIXct(x@time))})), origin = "1970-01-01 00:00:00", tz = tz)
+  tend <- ceiling_date(tend, unit = "hours")
+  times <- seq(from = tstart, by = interval, length.out = ceiling(as.numeric(difftime(tend, tstart, units = "secs"))/interval))
+  
+  # define matrix with time intervals
+  time.intervals <- data.frame(tstart = times[-length(times)], tend = times[-1])
+  
+  # set up cluster
+  cl <- makeCluster(cores, outfile="", type = "PSOCK")
+  registerDoParallel(cl)
+  if(is.null(clcall) == F){
+    clusterCall(cl, clcall)
+  }
+  clusterCall(cl, function(){library("lubridate")})
+  clusterCall(cl, function(){library("sp")})
+  clusterCall(cl, function(){library("rgdal")})
+  clusterCall(cl, function(){library("trajectories")})
+  clusterCall(cl, function(){library("spacetime")})
+  clusterExport(cl = cl, varlist = list("tracks", "time.intervals", "tz"), envir=environment())
+  
+  # reorganize track objects by including data points for gaps
+  new.tracks <- lapply(seq_along(tracks@tracks), function(track_i){
+    
+    # convert x@time (xts) for use in cluster
+    time.track <- as.POSIXct(tracks@tracks[[track_i]]@time)
+    
+    # define columns lon and lat of tracks
+    tracks@tracks[[track_i]]@data$lon <- coordinates(tracks@tracks[[track_i]]@sp)[,1]
+    tracks@tracks[[track_i]]@data$lat <- coordinates(tracks@tracks[[track_i]]@sp)[,2]
+    
+    # force to numeric
+    tracks@tracks[[track_i]]@data$lon <- as.numeric(as.character(tracks@tracks[[track_i]]@data$lon))
+    tracks@tracks[[track_i]]@data$lat <- as.numeric(as.character(tracks@tracks[[track_i]]@data$lat))
+    
+    # define which row to replicate if there is a gap at the first time interval
+    list.cond <- list()
+    
+    clusterExport(cl = cl, varlist = list("tracks", "time.intervals", "tz", "track_i", "time.track", "list.cond"), envir = environment())
+    
+    new.track <- 
+      foreach(timeinterval_i = c(1:nrow(time.intervals)), .combine = rbind) %dopar%{
+        
+        # convert time.intervals[timeinterval_i,]
+        time.intervals1 <- as.POSIXct(as.numeric(time.intervals[timeinterval_i,]), origin = "1970-01-01 00:00:00", tz = tz)
+        
+        # define condition
+        cond <- which(time.track >= time.intervals1[1] & time.track <= time.intervals1[2])
+        if(length(cond) != 0){
+          list.cond <- c(list.cond, cond[1])
+        }
+        if(length(list.cond) > 0){
+          cond.prev <- list.cond[[which(lapply(list.cond, function(y){length(y)}) >0)[length(which(lapply(list.cond, function(y){length(y)}) >0))]]]
+        }else{
+          cond.prev <- 1
+        }
+        
+        # define entry_i of the new Track object
+        if(length(cond) == 0 && timeinterval_i == 1){
+          new.point <- c(as.vector(tracks@tracks[[track_i]]@data[1,]), T)
+        }
+        if(length(cond) == 0 && timeinterval_i != 1){
+          new.point <- c(as.vector(tracks@tracks[[track_i]]@data[cond.prev,]), T)
+        }
+        if(length(cond) == 1){
+          new.point <- c(as.vector(tracks@tracks[[track_i]]@data[cond,]), F)
+        }
+        
+        # evaluate if exactly one data point per time interval
+        if(length(cond) > 1){
+          warning(paste0(length(cond), " data points per interval ", timeinterval_i, " in a Track."))
+          new.point <- c(as.vector(tracks@tracks[[track_i]]@data[cond[1],]), F)
+        }
+        
+        # convert new.point to a vector
+        new.point <- do.call(c, new.point)
+        
+        # change time information (connections with zero duration are not allowed)
+        if(new.point[length(new.point)] == T){
+          new.point["time"] <- mean(as.numeric(time.intervals[timeinterval_i,]))
+        }
+        
+        # return result
+        return(new.point)
+        
+      }
+    
+    # remove rownames
+    rownames(new.track) <- NULL
+    
+    # convert to dataframe
+    new.track <- as.data.frame(new.track, stringsAsFactors = F)
+    
+    # add name for new variable
+    names(new.track)[ncol(new.track)] <- "gap"
+    
+    # redefine the index (relating to time in ascending order)
+    new.track$INDEX <- seq(1, nrow(new.track))
+    
+    # extract gaps and adjust time information (conections of zero duration are not allowed)
+    for(row_i in c((nrow(new.track)-1):2)){
+      if(new.track$time[row_i] == new.track$time[row_i - 1]){
+        new.track$time[row_i-1] <- as.POSIXct(as.numeric(new.track$time[row_i]) - interval, origin = "1970-01-01 00:00:00", tz = tz)
+      }
+    }
+    
+    # convert several attributes
+    #new.track[,c(1, 3, 4, 7, 8, 16, 17)] <- apply(new.track[,c(1, 3, 4, 7, 8, 16, 17)], 2, function(x){as.numeric(as.character(x))})
+    new.track$lon <- as.numeric(as.character(new.track$lon))
+    new.track$lat <- as.numeric(as.character(new.track$lat))
+    new.track$time <- as.POSIXct(as.numeric(as.character(new.track$time)), origin = "1970-01-01 00:00:00", tz = tz)
+    
+    # return result
+    return(new.track)
+    
+  })
+  
+  # create SpatialPoints objects from new.tracks
+  new.tracks.sp <- 
+    parLapply(cl, new.tracks, function(x){
+      
+      # create sp object
+      new.track.sp <- SpatialPoints(coords = data.frame(lon = x$lon, lat = x$lat), proj4string = CRS(
+        "+proj=longlat +zone=46 +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"
+      ))
+      
+      # return result
+      return(new.track.sp)
+      
+    })
+  
+  # create new Track objects
+  clusterExport(cl = cl, varlist = list("time.intervals", "new.tracks", "new.tracks.sp"), envir = environment())
+  new.tracks1 <- parLapply(cl, seq_along(new.tracks), function(track_i){
+    
+    a <- Track(STIDF(sp = new.tracks.sp[[track_i]], time = as.POSIXct(time.intervals[,1]) , data = new.tracks[[track_i]], endTime = as.POSIXct(time.intervals[,2])))
+    
+  })
+  new.tracks1 <- Tracks(new.tracks1)
+  
+  # stop cluster
+  stopCluster(cl)
+  
+  # return result
+  return(new.tracks1)
+  
+}
+```
+
+## TrackToSpatialPointsDataFrame
+
+Function in order to convert a `Track` object into a `SpatialPointsDataFrame` object and transform respective longitude latitude values to UTM (zone 46). Internal function used by `locationsTracks2`. The function assumes longitude latitude values 
+
+* Arguments:
+  + `trs`: A `Track`object.
+
+
+* Value: 
+  + A `SpatialPointsDataFrame` object containing the information of the slot `sp` and `data` of the corresponding `Track` object. 
+
+```{r TrackToSpatialPointsDataFrame, eval = T, message = F, warning = F}
+TrackToSpatialPointsDataFrame <- function(trs
+){
+  
+  # get Track data
+  trs.df <- trs@data
+  
+  # convert track to SpatialPointsDataFrame and transform to UTM
+  trsSP <- as(as(trs, "SpatialLines"), "SpatialPoints")
+  trsSP <-
+    spTransform(
+      trsSP,
+      CRS(
+        "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+      )
+    )
+  trsSP <- SpatialPointsDataFrame(trsSP, trs.df, match.ID = F)
+  
+  # return result
+  return(trsSP)
+  
+}
+```
+
+## extractClustersBuffer
+
+Function in order to cluster the points of a `SpatialPoints` object based on their intersection with buffers constructed around the points. Internal function used by `locationsTracks2`.
+
+* Arguments:
+  + `trsSP`: A `SpatialPointsDataFrame`object representing a `Track` object, i.e. the result of the function `TrackToSpatialPointsDataFrame`.
++ `radius`: The radius of the buffers computed around each value [m] which are used for clustering values to locations. Default is `radius = 200` [m].
+
+* Value: 
+  + An `integer` vector with the same length as the number of points in `trsSP` indicating to which cluster each point is assigned. Cluster indices are not ordered, however points of `trsSP` representing gaps (as indicated by `trsSP@data$gap`) obtain the cluster index `0`.
+
+```{r extractClustersBuffer, eval = T, message = F, warning = F}
+extractClustersBuffer <- function(trsSP, radius = 200
+){
+  
+  # indices with points that have not been assigned to a cluster yet
+  leftover <- c(1:length(trsSP))
+  leftover.old <- leftover
+  first <- T
+  
+  while(length(leftover) != 0){
+    
+    # subset points for buffering (1%)
+    # ind.select <- leftover[seq(1, length(leftover), by = length(leftover)*0.01)]
+    ind.select <- leftover[sample(c(1:length(leftover)), size = ceiling(length(leftover)*0.01))]
+    
+    # compute buffer
+    buffer.trs <- gBuffer(trsSP[ind.select,], width = radius, quadsegs = 25)
+    
+    # get intersecting points
+    a.new <- over(trsSP, disaggregate(buffer.trs))
+    
+    if(first == T){
+      # get intersecting points
+      buffer.trs.tot <- buffer.trs
+      a.tot <- a.new
+      
+      first = F
+    }
+    
+    # define points that were inside a buffer at any loop run
+    a.tot[which(is.na(a.tot))] <- a.new[which(is.na(a.tot))]
+    
+    # define total buffer range
+    buffer.trs.tot <- gUnion(buffer.trs, buffer.trs.tot)
+    
+    # subset leftover
+    if(length(which(is.na(a.tot))) != 0){
+      leftover <- leftover.old[which(is.na(a.tot))]
+    }else{
+      leftover = NULL
+      
+      a.tot <- over(trsSP, disaggregate(buffer.trs.tot))
+    }
+    
+  }
+  
+  # set location of gaps to 0
+  a.tot[which(trsSP@data$gap == T)] <- 0
+  
+  # return result
+  return(a.tot)
+  
+}
+```
+
+## locationsTracks
+
+Function in order to identify distinct locations in a `Tracks` object and the order of the visit of these locations and in order to compute various variables concerning the visit of a specific location (mean latitude, mean longitude, mean elevation, residence time, arrival time, departure time, speed, number of visits at location i). The identification of locations is based on the identification of clusters of fixes by identifying intersecting buffers around each fix. Campsites are distinguished from other locations by a specified minimal residence time. In contrast to the function above, this function handles `Track` objects that have an extra boolean column `gap` in the slot `data` indicating missing data values along a regular spaced time vector.
+
+* Arguments:
+  + `trs`: A `Track`object.
++ `radius`: The radius of the buffers computed around each value [m] which are used for clustering values to locations. Default is `radius = 200` [m].
++ `t.min`: The minimum residence time at a specific location [s] which is used to classify locations as campsites (if the residence time is larger than `t.min`) in contrast to other locations. The default is `t.min = 345600`, i.e. 4 days.
++ `return_summary`: A logical value indicating if data points of `trs` should be collapsed by visits and locations (i.e. one data point per visit and location) (`return_summary = T`) or if all data points of `trs` should just be assigned to a location, a visit and classified as campsite or not (`return_summary = F`). Default is `return_summary = T`.
++ `remove_gaps`: A logical value indicating if all visits representing gaps should be removed in the output. Its effect depends on the value of `merge_inter_gaps`. If `return_summary = F`, `remove_gaps` will be ignored. Default is `remove_gaps = T`. 
++ `merge_inter_gaps`: A logical value indicating if adjacent visits at the same location should be merged as one visit if there is a gap between them (`merge_inter_gaps = T`) or not (`merge_inter_gaps = F`). If `return_summary = F` or `remove_gaps = F`, `merge_inter_gaps` will be ignored. Default is `merge_inter_gaps = T`
++ `merge_campsites`: A logical value indicating if visits not representing campsites should be dropped, i.e. only visits representing campsites should be considered. If `merge_campsites = T`, visits which are no campsites are deleted and visits at the same location which are campsites and now are adjacent, are merged. Default is `merge_campsites = T`. `merge_campsites` will be ignored if `return_summary = F` and `merge_inter_gaps = F` and `remove_gaps = F`
+
+* Value: 
+  + A `Tracks` object containing the following columns within the data slot:
+  1. `location`: An integer value discriminating different locations.
+2. `visits`: An integer vector indicating the number of visit at a specific location (indicated by `location`) the data point is assigned to (i.e. counter for the visits at a location).
+2. `res.time`: The residence time at a specific location [s], only if `return_summary = T`.
+3. `campsite`: A logical value indicating whether a specific visit of a location is considered as campsite or not (based on `t.min`).
+4. `arrival.time`: A character representing the arrival time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`, only if `return_summary = T`..
+5. `departure.time`: A character representing the departure time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`, only if `return_summary = T`..
+6. `lat`: A numeric value representing the centroids for the latitude of fixes corresponding to a specific visit of a location [?].
+7. `lon`: A numeric value representing the centroids for the longitude of fixes corresponding to a specific visit of a location [?].
+8. `alt`: A numeric value representing the mean elevation value of fixes corresponding to a specific visit of a location [m].
+9. `speed`: A numeric value indicating the mean speed at the time fixes were taken for fixes corresponding to a specific visit of a location [m s<sup>-1</sup>].
+
+
+```{r locationsTracks2, eval = T, message = F, warning = F}
+locationsTracks <- function(trs,
+                            radius = 200,
+                            t.min = 345600,
+                            return_summary = T,
+                            remove_gaps = T,
+                            merge_inter_gaps = T,
+                            merge_campsites = T
+){
+  
+  # subset data if specified (if a summary is created and gaps are removed and adjacent visits at the same lication are merged)
+  if(return_summary == T && remove_gaps == T && merge_inter_gaps == T){
+    trs.data <- trs@data[which(trs@data$gap == F),]
+    trs.sp <- as(as(trs, "SpatialLines"), "SpatialPoints")[which(trs@data$gap == F)]
+    trs.time <- trs@time[which(trs@data$gap ==F)]
+    trs.endtime <- trs@endTime[which(trs@data$gap == F)]
+    trs <- Track(STIDF(sp = trs.sp, time = trs.time , data = trs.data, endTime = trs.endtime))
+  }
+  
+  # convert track to SpatialPointsDataFrame and transform to UTM
+  trsSP <- TrackToSpatialPointsDataFrame(trs)
+  
+  # cluster the data points
+  a.tot <- extractClustersBuffer(trsSP, radius)
+  
+  # add variable to trsSP
+  trsSP$campsites <- a.tot
+  
+  if(length(unique(a.tot)) == 1){
+    warning("Only one location identified!")
+    return(NULL)
+  }
+  
+  # find order of campsite visits
+  order.campsite.vis <- 1
+  for(fi in c(1:length(a.tot))){
+    if(a.tot[fi] != a.tot[order.campsite.vis[length(order.campsite.vis)]]){
+      order.campsite.vis <- c(order.campsite.vis, fi)
+    }
+    if(fi == length(a.tot) && order.campsite.vis[length(order.campsite.vis)] != fi){
+      order.campsite.vis <- c(order.campsite.vis, fi)
+    }
+  }
+  
+  # create a matrix with start and end indices of each visit
+  order.campsite.vis <- rbind(order.campsite.vis[-length(order.campsite.vis)], order.campsite.vis[-1])
+  
+  # create a list with respective indices
+  order.campsite.vis <- list(apply(order.campsite.vis, 2, function(x){x[1]:(x[2]-1)}))[[1]]
+  
+  # remove non-campsites locations and merge campsites (optionally)
+  if(return_summary == T && merge_campsites == T && remove_gaps == T && merge_inter_gaps == T){
+    
+    # define a new list to store the reduced information in
+    order.campsite.vis1 <- list()
+    
+    # remove visits with a duration < t.min
+    order.campsite.vis <- order.campsite.vis[-which(sapply(order.campsite.vis, function(x){difftime(trsSP$time[range(x)[2]], trsSP$time[range(x)[1]], units = "sec")}) < t.min)]
+    
+    # assign location ids to each visit
+    loc.ids.visits <- sapply(order.campsite.vis, function(x){unique(a.tot[x])})
+    
+    # merge adjacent visits at the same location
+    done <- NULL
+    for(location_i in seq_along(loc.ids.visits)){
+      if(location_i %in% done){next}
+      done <- c(done, location_i)
+      new.visit <- NULL
+      continue <- T
+      iter <- 1
+      while(continue == T){
+        if(loc.ids.visits[location_i + iter] == loc.ids.visits[location_i] && location_i != length(loc.ids.visits)){
+          new.visit <- c(new.visit, order.campsite.vis[[location_i + iter]])
+          done <- c(done, location_i+iter)
+          iter <- iter+1
+        }else{
+          continue <- F
+        }
+      }
+      if(is.null(new.visit) == F){
+        order.campsite.vis1 <- c(order.campsite.vis1, list(new.visit))
+      }
+      
+    }
+    
+    order.campsite.vis <- order.campsite.vis1
+    
+  }
+  
+  # define a dataframe to store the results in (with the location id of each visit)
+  campsites.var <- data.frame(location = trsSP$campsites[sapply(order.campsite.vis, function(x){x[1]})])
+  
+  # duration of each visit
+  campsites.var$res.time = sapply(order.campsite.vis, function(x){difftime(trsSP$time[range(x)[2]], trsSP$time[range(x)[1]], units = "sec")})
+  
+  # classify visits as campsites or short term visits
+  campsites.var$campsite <- rep(T, nrow(campsites.var))
+  campsites.var$campsite[which(campsites.var$res.time < t.min)] <- F
+  
+  # arrival and departure time
+  campsites.var$arrival.time <- sapply(order.campsite.vis, function(x){as.character(trsSP$time[x[1]])})
+  campsites.var$departure.time <- sapply(order.campsite.vis, function(x){as.character(trsSP$time[x[length(x)]])})
+  
+  # arrival and departure time as row indices
+  campsites.var$arrival.time1 <- sapply(order.campsite.vis, function(x){range(x)[1]})
+  campsites.var$departure.time1 <- sapply(order.campsite.vis, function(x){range(x)[2]})
+  
+  # remove gaps (optionally)
+  if(return_summary == T && remove_gaps == T && merge_inter_gaps == F && length(which(campsites.var$location == 0)) > 0){
+    campsites.var <- campsites.var[-which(campsites.var$location == 0),]
+  }
+  
+  # number of visits per location
+  visits <- rep(NA, nrow(campsites.var))
+  for(loc_i in unique(campsites.var$location)){
+    
+    visits[which(campsites.var$location == loc_i)] <- seq(from = 1, to = length(which(campsites.var$location == loc_i)))
+    
+  }
+  campsites.var$visits <- visits
+  
+  # set campsite of gaps to NA
+  campsites.var$campsite[which(campsites.var$location == 0)] <- NA
+  
+  # reorder indices of locations (according to arrival time)
+  done <- NULL
+  iter <- 1
+  location.new <- rep(0, nrow(campsites.var))
+  for(i in c(1:nrow(campsites.var))){
+    if(i %in% done || is.na(campsites.var$visits[i])){
+      next()
+    }else{
+      done <- c(done, which(campsites.var$location == campsites.var$location[i]))
+      location.new[which(campsites.var$location == campsites.var$location[i])] <- iter
+      iter <- iter+1
+    }
+  }
+  campsites.var$location <- location.new
+  
+  # add information to trs.df
+  locationid <- rep(NA, nrow(trs.df))
+  campsite <- rep(NA, nrow(trs.df))
+  visit <- rep(NA, nrow(trs.df))
+  for(visit_i in c(1:nrow(campsites.var))){
+    
+    # get time interval of visit
+    timeint <- c(campsites.var$arrival.time1[visit_i], campsites.var$departure.time1[visit_i])
+    
+    # define condition
+    cond <- seq(timeint[1], timeint[2])
+    
+    # add location id to locationid
+    locationid[cond] <- campsites.var$location[visit_i]
+    
+    # add information on campsite to campsite
+    campsite[cond] <- campsites.var$campsite[visit_i]
+    
+    # add information on number of visits to visit
+    visit[cond] <- campsites.var$visits[visit_i]
+  }
+  
+  # add locationid, campsite and visit to trs.df
+  trs.df$location <- locationid
+  trs.df$campsite <- campsite
+  trs.df$visit <- visit
+  
+  # replace trs@data by new values
+  trs@data <- trs.df
+  
+  # get mean position data for each location visit
+  centr.coords <- data.frame()
+  for(visit_i in c(1:length(order.campsite.vis))){
+    
+    centr.coords <- rbind(centr.coords, apply(matrix(trsSP@coords[order.campsite.vis[[visit_i]],], ncol = 2), 2 , mean))
+    
+  }
+  centr.coords$alt <- sapply(order.campsite.vis, function(x){mean(trsSP$HEIGHT[x])})
+  names(centr.coords) <- c("lon", "lat", "alt")
+  
+  # convert to SP
+  centr.coords <- SpatialPoints(centr.coords[,-3], proj4string = CRS(proj4string(trsSP)))
+  
+  # transform back to WGS84 longitude latitude
+  a <- spTransform(centr.coords, trs@sp@proj4string)
+  
+  # add variables to campsites.var
+  campsites.var$lon <- a@coords[,1]
+  campsites.var$lat <- a@coords[,2]
+  campsites.var$alt <- sapply(order.campsite.vis, function(x){mean(trsSP$HEIGHT[x])})
+  
+  # get mean speed at each location visit
+  campsites.var$speed <- sapply(order.campsite.vis, function(x){mean(trsSP$SPEED[x])})
+  
+  # create SpatialPointsDataFrame from campsites.var
+  campsites.var1 <- campsites.var
+  campsites.var <- SpatialPoints(coords = data.frame(lon = campsites.var$lon, lat = campsites.var$lat), proj4string = CRS(
+    "+proj=longlat +zone=46 +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"
+  ))
+  campsites.var <-
+    spTransform(
+      campsites.var,
+      CRS(
+        "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+      )
+    )
+  
+  # create Track object from campsites.var
+  campsites.var <- Track(STIDF(sp = campsites.var, time = as.POSIXct(campsites.var1$arrival.time) , data = campsites.var1, endTime = as.POSIXct(campsites.var1$departure.time)))
+  
+  if(return_summary == T){
+    return(campsites.var)
+  }else{
+    return(trs)
+  }
+  
+}
+```
+
+## redefineIndices
+
+Function in order to redefine a column with index values (integer) according to a column with time information, i.e. new indices will be assigned to each set of rows with the same index in relation to their order in time.
+
+* Arguments:
+    + `df`: A `data.frame`object with a column representing indices and a column representing time information as `POSIXct`.
+    + `indices`: A character vector giving the name of the column of `df` which contains the index values.
+    + `time`: A character vector giving the name of the column of `df` which contains the time values
+    + `notchange`: An integer vector specifying which original index values should not be changed. Default is `notchange = NULL`, i.e. all indices will be changed.
+
+* Value: 
+    + A `data.frame` object with the redefined index values.
+
+```{r redefineIndices, eval = T, message = F, warning = F}
+redefineIndices <- function(df, indices, time, notchange = NULL
+){
+  
+  # get order of time information
+  order_time <- order(df[time])
+  
+  # define vectors to store information on already processes values in
+  done <- NULL
+  
+  # define start value for new indices
+  iter <- 1
+  while(iter %in% notchange){
+        iter <- iter+1
+  }
+  
+  # redefine indices of locations (according to arrival time)
+  index_new <- rep(0, nrow(df))
+  for(i in c(1:nrow(df))){
+    if(i %in% done || df[indices][i,] %in% notchange){
+      next()
+    }else{
+      done <- c(done, which(df[indices] == df[indices][i,]))
+      index_new[which(df[indices] == df[indices][i,])] <- iter
+      iter <- iter + 1
+      while(iter %in% notchange){
+        iter <- iter + 1
+      }
+    }
+  }
+  
+  # redefine df[indices]
+  df[indices] <- index_new
+  
+  # return result
+  return(df)
+  
+}
+```
+
+## locationsTracks3
+
+Function in order to identify distinct locations in a `Tracks` object and the order of the visit of these locations and in order to compute various variables concerning the visit of a specific location (mean latitude, mean longitude, mean elevation, residence time, arrival time, departure time, speed, number of visits at location i). The identification of locations is based on the identification of clusters of fixes by identifying intersecting buffers around each fix. Campsites are distinguished from other locations by a specified minimal residence time. In contrast to `locationsTracks`, this function does not any more handle gaps because the imputation of missing values is assumed to be performed with `fillGapTrack`. Therefore, gaps are not presented as individual visits and data values will not be merged by `locationsTracks3`.
+
+* Arguments:
+    + `trs`: A `Track`object.
+    + `radius`: The radius of the buffers computed around each value [m] which are used for clustering values to locations. Default is `radius = 200` [m].
+    + `t.min`: The minimum residence time at a specific location [s] which is used to classify locations as campsites (if the residence time is larger than `t.min`) in contrast to other locations. The default is `t.min = 345600`, i.e. 4 days.
+    + `return_summary`: A logical value indicating if data points of `trs` should be collapsed by visits and locations (i.e. one data point per visit and location) (`return_summary = T`) or if all data points of `trs` should just be assigned to a location, a visit and classified as campsite or not (`return_summary = F`). Default is `return_summary = T`.
+
+* Value: 
+    + A `Tracks` object containing the following columns within the data slot:
+        1. `location`: An integer value discriminating different locations.
+        2. `visits.loc`: An integer vector indicating the number of visit at a specific location (indicated by `location`) the data point is assigned to (i.e. counter for the visits at a location).
+        2. `visits.camp`: An integer vector indicating the number of visit at a specific location that is a campsite (indicated by `location` and `campsite == T`) the data point is assigned to (i.e. counter for the visits at a campsite).
+        2. `res.time`: The residence time at a specific location [s], only if `return_summary = T`.
+        3. `campsite`: A logical value indicating whether a specific visit of a location is considered as campsite or not (based on `t.min`).
+        4. `arrival.time`: A character representing the arrival time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`, only if `return_summary = T`..
+        5. `departure.time`: A character representing the departure time for a specific visit of a location. The format is `"%Y-%m-%d %H:%M:%S"`, only if `return_summary = T`.
+        4. `arrival.time1`: A numeric value representing the arrival time for a specific visit of a location as row index of `trs`, only if `return_summary = T`.
+        5. `departure.time1`: A numeric value representing the departure time for a specific visit of a location as row index of `trs`, only if `return_summary = T`.
+        6. `lat`: A numeric value representing the centroids for the latitude of fixes corresponding to a specific visit of a location [°].
+        7. `lon`: A numeric value representing the centroids for the longitude of fixes corresponding to a specific visit of a location [°].
+        8. `alt`: A numeric value representing the mean elevation value of fixes corresponding to a specific visit of a location [m].
+        9. `speed`: A numeric value indicating the mean speed at the time fixes were taken for fixes corresponding to a specific visit of a location [m s<sup>-1</sup>].
+
+
+```{r locationsTracks3, eval = T, message = F, warning = F}
+locationsTracks3 <- function(trs,
+                            radius = 200,
+                            t.min = 345600,
+                            return_summary = T
+){
+  
+  # convert track to SpatialPointsDataFrame and transform to UTM
+  trsSP <- TrackToSpatialPointsDataFrame(trs)
+  
+  # cluster the data points
+  a.tot <- extractClustersBuffer(trsSP, radius)
+  
+  # add variable to trsSP
+  trsSP$campsites <- a.tot
+  
+  # return NULL if a data set contains only one location (no Track object can be constructed from one point)
+  if(length(unique(a.tot)) == 1){
+    warning("Only one location identified!")
+    return(NULL)
+  }
+  
+  # find order of campsite visits
+  order.campsite.vis <- lapply(unique(a.tot)[-which(unique(a.tot) == 0)], function(x){
+    identifyBlocksVariable(track = trsSP, variable = "campsites", value = x)}
+    )
+  order.campsite.vis <- as.matrix(do.call(rbind, order.campsite.vis))
+  order.campsite.vis <- matrix(order.campsite.vis[order(order.campsite.vis[,1]),], ncol = 2, byrow = TRUE)
+  
+  # create a list with respective indices
+  order.campsite.vis <- list(apply(order.campsite.vis, 1, function(x){x[1]:(x[2]-1)}))[[1]]
+  
+   # define a dataframe to store the results in (with the location id of each visit)
+  campsites.var <- data.frame(location = trsSP$campsites[sapply(order.campsite.vis, function(x){x[1]})])
+  
+  # duration of each visit
+  campsites.var$res.time = sapply(order.campsite.vis, function(x){difftime(trsSP$time[range(x)[2]], trsSP$time[range(x)[1]], units = "sec")})
+  
+  # classify visits as campsites or short term visits
+  campsites.var$campsite <- rep(T, nrow(campsites.var))
+  campsites.var$campsite[which(campsites.var$res.time < t.min)] <- F
+  
+  # arrival and departure time
+  campsites.var$arrival.time <- sapply(order.campsite.vis, function(x){as.character(trsSP$time[x[1]])})
+  campsites.var$departure.time <- sapply(order.campsite.vis, function(x){as.character(trsSP$time[x[length(x)]])})
+  
+  # arrival and departure time as row indices
+  campsites.var$arrival.time1 <- sapply(order.campsite.vis, function(x){range(x)[1]})
+  campsites.var$departure.time1 <- sapply(order.campsite.vis, function(x){range(x)[2]})
+  
+  # number of visits per location
+  visits <- rep(NA, nrow(campsites.var))
+  for(loc_i in unique(campsites.var$location)){
+    
+    visits[which(campsites.var$location == loc_i)] <- seq(from = 1, to = length(which(campsites.var$location == loc_i)))
+    
+  }
+  campsites.var$visits.loc <- visits
+  
+  # number of visits per campsite
+  visits <- rep(NA, nrow(campsites.var))
+  for(loc_i in unique(campsites.var$location)){
+    
+    visits[which(campsites.var$location == loc_i & campsites.var$campsite == T)] <- seq(from = 1, to = length(which(campsites.var$location == loc_i & campsites.var$campsite == T)))
+    
+  }
+  campsites.var$visits.camp <- visits
+  
+  # redefine indices of locations (according to arrival time)
+  campsites.var <- redefineIndices(df = campsites.var, indices = "location", time = "arrival.time", notchange = 0)
+  
+  # get mean position data for each location visit
+  centr.coords <- data.frame()
+  for(visit_i in c(1:length(order.campsite.vis))){
+    
+    centr.coords <- rbind(centr.coords, apply(matrix(trsSP@coords[order.campsite.vis[[visit_i]],], ncol = 2), 2 , mean))
+    
+  }
+  centr.coords$alt <- sapply(order.campsite.vis, function(x){mean(trsSP$HEIGHT[x])})
+  names(centr.coords) <- c("lon", "lat", "alt")
+  
+  # convert to SP
+  centr.coords <- SpatialPoints(centr.coords[,-3], proj4string = CRS(proj4string(trsSP)))
+  
+  # transform back to WGS84 longitude latitude
+  a <- spTransform(centr.coords, trs@sp@proj4string)
+  
+  # add variables to campsites.var
+  campsites.var$lon <- a@coords[,1]
+  campsites.var$lat <- a@coords[,2]
+  campsites.var$alt <- sapply(order.campsite.vis, function(x){mean(trsSP$HEIGHT[x])})
+  
+  # get mean speed at each location visit
+  campsites.var$speed <- sapply(order.campsite.vis, function(x){mean(trsSP$SPEED[x])})
+  
+  # create SpatialPointsDataFrame from campsites.var
+  campsites.var1 <- campsites.var
+  campsites.var <- SpatialPoints(coords = data.frame(lon = campsites.var$lon, lat = campsites.var$lat), proj4string = CRS(
+    "+proj=longlat +zone=46 +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"
+  ))
+  campsites.var <-
+    spTransform(
+      campsites.var,
+      CRS(
+        "+proj=utm +zone=46 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"
+      )
+    )
+  
+  # create Track object from campsites.var
+  campsites.var <- Track(STIDF(sp = campsites.var, time = as.POSIXct(campsites.var1$arrival.time) , data = campsites.var1, endTime = as.POSIXct(campsites.var1$departure.time)))
+  
+  # add information to trs
+  locationid <- rep(NA, nrow(trsSP@data))
+  campsite <- rep(NA, nrow(trsSP@data))
+  visits.loc <- rep(NA, nrow(trsSP@data))
+  visits.camp <- rep(NA, nrow(trsSP@data))
+  for(visit_i in c(1:nrow(campsites.var))){
+    
+    # get time interval of visit
+    timeint <- c(campsites.var$arrival.time1[visit_i], campsites.var$departure.time1[visit_i])
+    
+    # define condition
+    cond <- seq(timeint[1], timeint[2])
+
+    # add location id to locationid
+    locationid[cond] <- campsites.var$location[visit_i]
+    
+    # add information on campsite to campsite
+    campsite[cond] <- campsites.var$campsite[visit_i]
+    
+    # add information on number of visits to visits.loc
+    visits.loc[cond] <- campsites.var$visits.loc[visit_i]
+    
+    # add information on number of visits to visits.camp
+    visits.camp[cond] <- campsites.var$visits.camp[visit_i]
+  }
+  
+  # add locationid, campsite and visit to trs.df
+  trs@data$location <- locationid
+  trs@data$campsite <- campsite
+  trs@data$visits.loc <- visits.loc
+  trs@data$visits.camp <- visits.camp
+  
+  if(return_summary == T){
+    return(campsites.var)
+  }else{
+    return(trs)
+  }
+  
+}
+```
+
+## identifyBlocksVariable
+
+Function in order to identify blocks of rows in the `data` slot of a `Track` object based on a grouping variable and a value for this variable. A block is defined as a set of directly subsequent rows with the same value for the specified variable. 
+
+* Arguments:
+    + `track`: A `Track`object (or `data.frame` object) with a boolean column `gap` in `track@data`. Data values have to be regularly spaced.
+    + `variable`: A character value indicating the name of a variable in `track@data` to group for.
+    + `value`: A value of the `track@data$variable` for which to identify blocks of subsequent rows.
+    
+* Value: 
+    + A `matrix` with two columns and rows for each identified block. The first column indicates the row of `track@data` where the block begins and the second column indicates the row of `track@data` where the block ends or `NULL` if `value` does not exist for `variable`.
+      
+```{r identifyBlocksVariable, eval = T, message = F, warning = F}
+identifyBlocksVariable <- function(track, variable, value){
+  
+  # get indices of entries representing gaps
+  if(inherits(track, "data.frame")){
+    which.gaps <- which(track[variable] == value)
+  }else{
+    which.gaps <- which(track@data[variable] == value)
+  }
+  
+  # identify blocks of gaps within track
+  if(length(which.gaps) == 0){
+    blocks.gaps1 <- NULL
+  }else{
+    if(length(which.gaps) > 1){
+    blocks.gaps <- which.gaps[-1] - which.gaps[-length(which.gaps)]
+    blocks.gaps1 <- NULL
+    block <- NULL
+    for(i in seq_along(blocks.gaps)){
+      
+      # start of first block
+      if(i == 1){
+        block <- which.gaps[i]
+      }
+      
+      # end of last block
+      if(i == length(blocks.gaps)){
+        block <- c(block, which.gaps[i+1])
+        blocks.gaps1 <- rbind(blocks.gaps1, block)
+      }
+      
+      # end and start of intermediate block
+      if(length(block) == 1 && blocks.gaps[i] != 1){
+        block <- c(block, which.gaps[i])
+        blocks.gaps1 <- rbind(blocks.gaps1, block)
+        block <- which.gaps[i+1]
+      }else{
+        next
+      }
+      
+    }
+    }else{
+      blocks.gaps1 <- matrix(rep(which.gaps, 2), nrow = 1, ncol = 2)
+    }
+  }
+  
+  # return result
+  return(blocks.gaps1)
+}
+```
+
+## fillGapTrack
+
+Function in order to impute missing values in a `Track` object. Gaps are filled if their duration is &le; a user specified duration threshold and if the distance between the spatial position of the last data value before the gap and the spatial position of the first data value after the gap is &le; a user specified distane threshold.
+
+* Arguments:
+    + `track`: A `Track`object with a boolean column `gap` in `track@data`. Data values have to be regularly spaced (along time).
+    + `maxduration`: A numerical value representing the maximum allowed duration of a gap that is filled [s].
+    + `maxdistance`: A numerical value representing the maximum allowed distance between the spatial position of the last data value before a gap and the spatial position of the first data value after a gap that is filled [m].
+    + `timeinterval`: A numerical value reperesenting the duration of a time interval represented by one data value of `track` [s].
+    
+* Value: 
+    + `Track` object with filled gaps.
+
+```{r fillGapTrack, eval = T, message = F, warning = F}
+fillGapTrack <- function(track, maxduration, maxdistance, timeinterval){
+  
+  # identify blocks of representing gaps
+  blocks.gaps1 <- identifyBlocksVariable(track, variable = "gap", value = T)
+  
+  # test if blocks.gaps1 == NULL
+  if(is.null(blocks.gaps1)){
+    track@data$filled = F
+    return(track)
+  }
+  
+  # remove the first and the last gap (cannot be filled)
+  if(1 %in% blocks.gaps1[,1]){
+    blocks.gaps1 <- blocks.gaps1[-which(blocks.gaps1[,1] == 1),]
+  }
+  if(nrow(track@data) %in% blocks.gaps1[,2]){
+    blocks.gaps1 <- blocks.gaps1[-which(blocks.gaps1[,2] == nrow(track@data)),]
+  }
+  
+  # get duration of gaps
+  discard.gaps <- 
+    apply(blocks.gaps1, 1, function(x){
+    if(length(x[1]:x[2])*timeinterval > maxduration){
+      0
+    }else{
+      1
+    }
+  })
+  
+  # discard gaps > maxduration
+  if(length(which(discard.gaps == 0)) > 0){
+    blocks.gaps1 <- blocks.gaps1[-which(discard.gaps == 0),]
+  }
+  
+  # test if blocks.gaps1 == NULL
+  if(is.null(blocks.gaps1)){
+    track@data$filled = F
+    return(track)
+  }
+  
+  # get distance between points adjacent to each gap block
+  discard.gaps <- 
+    apply(blocks.gaps1, 1, function(x){
+    
+    block.dist <- pointDistance(c(track@data$lon[x[1]-1], track@data$lat[x[1]-1]), c(track@data$lon[x[2]+1], track@data$lat[x[2]+1]), lonlat = T)
+    if(is.na(block.dist)){
+      0
+    } else{
+      if(block.dist > maxdistance){
+      0
+      }else{
+        1
+      }
+    } 
+                    
+  })
+  
+  # discard gaps with differing locations between points adjacent to each gap block
+  if(length(which(discard.gaps == 0)) > 0){
+    blocks.gaps1 <- blocks.gaps1[-which(discard.gaps == 0),]
+  }
+  
+  # test if blocks.gaps1 == NULL
+  if(is.null(blocks.gaps1)){
+    track@data$filled = F
+    return(track)
+  }
+  
+  # fill gaps
+  track1 <- track
+  track@data[as.vector(unlist(apply(blocks.gaps1, 1, function(x){x[1]:x[2]}))),] <- 
+  do.call(rbind, apply(blocks.gaps1, 1, function(x){
+    do.call(rbind, replicate(length(x[1]:x[2]), track@data[x[1]-1,], simplify = F))
+  }))
+  track@data$time[as.vector(unlist(apply(blocks.gaps1, 1, function(x){x[1]:x[2]})))] <- 
+  track1@data$time[as.vector(unlist(apply(blocks.gaps1, 1, function(x){x[1]:x[2]})))]
+  
+  # create a variable to classify filled gaps
+  track@data$filled <- rep(F, nrow(track@data))
+  track@data$filled[as.vector(unlist(apply(blocks.gaps1, 1, function(x){x[1]:x[2]})))] <- T
+  
+  # recreate track as Track object
+  track <- Track(STIDF(sp = SpatialPoints(cbind(track@data$lon, track@data$lat)), time = as.POSIXct(track@data$time) , data = track@data, endTime = as.POSIXct(track@data$time)))
+  
+  # set crs
+  crs(track@sp) <- proj4string(track)
+  
+  # return result
+  return(track)
+}
+```
+
+## fillGapTracks
+
+Function in order to impute missing values for all `Track` objects of a `Tracks` object. Gaps are filled if their duration is &le; a user specified duration threshold and if the distance between the spatial position of the last data value before the gap and the spatial position of the first data value after the gap is &le; a user specified distane threshold.
+
+* Arguments:
+    + `tracks`: A `Tracks`object with `Track` objects with a boolean column `gap` in `tracks@tracks[[i]]@data` for each ith `Track` object. Data values have to be regularly spaced (along time).
+    + `maxduration`: A numerical value representing the maximum allowed duration of a gap that is filled [s].
+    + `maxdistance`: A numerical value representing the maximum allowed distance between the spatial position of the last data value before a gap and the spatial position of the first data value after a gap that is filled [m].
+    + `timeinterval`: A numerical value reperesenting the duration of a time interval represented by one data value of `track` [s].
+    + `cores`: The number of cores to use in parallel computation. Default is `cores = 1`.
+    + `clcall`: Additional arguments exported to `clusterCall` (e.g. in order to supply alternative paths to look packages for). Default is `clcall = NULL`.
+    
+* Value: 
+    + `Tracks` object with the input `Track` objects with filled gaps.
+
+```{r fillGapTracks, eval = T, message = F, warning = F}
+fillGapTracks <- function(tracks, maxduration, maxdistance, timeinterval, cores = 1, clcall = NULL){
+  
+  # set up cluster
+  cl <- makeCluster(cores, outfile="", type = "PSOCK")
+  registerDoParallel(cl)
+  if(is.null(clcall) == F){
+    clusterCall(cl, clcall)
+  }
+  clusterCall(cl, function(){library("raster")})
+  clusterCall(cl, function(){library("spacetime")})
+  clusterCall(cl, function(){library("trajectories")})
+  clusterExport(cl = cl, varlist = list("tracks", "maxduration", "maxdistance", "timeinterval", "identifyBlocksVariable", "fillGapTrack"), envir=environment())
+  
+  new.tracks <- parLapply(cl, tracks@tracks, fun = function(x){
+    
+    new.tracks1 <- fillGapTrack(track = x, maxduration = maxduration, maxdistance = maxdistance, timeinterval = timeinterval)
+                                 
+    # set crs
+    crs(new.tracks1@sp) <- proj4string(tracks)
+    
+    return(new.tracks1)
+                                }
+    )
+  
+  # convert to Tracks object
+  new.tracks <- Tracks(new.tracks)
+  
+  # stop cluster
+  stopCluster(cl)
+  
+  # return result
+  return(new.tracks)
+  
+}
+```
+
+## identifyTimeIntervals
+
+Function in order to assign each data value (row) in the `data` slot of a
+`Track` obkect to a user specified time interval.
+
+* Arguments:
+    + `track`: A `Track`object with a `POSIXct` column `time` in `track@data`.
+    + `timeinterval`: One of `"year"`, `"month"`, `"tendayinterval"`, `"day"` or `"all"`. If `timeinterval = "year"`, data values will be classified on a yearly resolution. If `timeinterval = "month"`, data values will be classified on a monthly resolution. If `timeinterval = tendayinterval`, data values will be classified on a ten-day interval resolution. Each month has three ten-day intervals with the last having varying lengths of 11 to 8 days (depending on the month and the occurance of leap years). If `timeinterval = "day"`, data values will be classified on a daily resolution. All time intervals that are not completely covered by `track` (i.e. potentially at the start and end of `track`) are handled as if they would represent the whole specified time interval. If `timeintervall = "all"`, all data values will be assigned to one class.  Default is `timeinterval = "month"`. 
+   
+* Value: 
+    + An integer vector with a length equal to `nrow(track@data)` with the same value for each data value corresponding to the same time interval.
+
+```{r identifyTimeIntervals, eval = T, message = F, warning = F}
+identifyTimeIntervals <- function(track, timeinterval = "month"){
+
+  # function in order to classify the whole time period as one group
+  assignall <- function(track){
+    timeinterval <- rep(1, length(track@data$time))
+  }
+  
+  # function in order to classify on a yearly resolution
+  assignyear <- function(track){
+      
+      # get unique years
+      timeinterval <- rep(0, length(track@data$time))
+      years <- strftime(track@data$time, format = "%Y")
+      iter <- 1
+      for(year_i in unique(years)){
+        timeinterval[which(years == years_i)] <- iter
+        iter <- iter + 1
+      }
+      
+      return(timeinterval)
+  }
+  
+  # function in order to classify on a monthly resolution
+  assignmonth <- function(track){
+    
+     # get unique months
+      timeinterval <- rep(0, length(track@data$time))
+      months <- strftime(track@data$time, format = "%y-%m")
+      iter <- 1
+      for(month_i in unique(months)){
+        timeinterval[which(months == month_i)] <- iter
+        iter <- iter + 1
+      }
+      
+      return(timeinterval)
+    
+  }
+  
+  # function in order to classify on a ten-day interval resolution
+  assigntendayinterval <- function(track){
+    
+     # get the years covered
+      years <- unique(strftime(track@data$time, format = "%Y"))
+      
+      # get the number of days in each year
+      days <- list()
+      for(year_i in seq_along(years)){
+        days[[year_i]] <- seq(as.POSIXct(paste0(years[year_i], "-01-01"), tz = attr(track@data$time, "tzone")), as.POSIXct(paste0(years[year_i], "-12-31"), tz = attr(track@data$time, "tzone")), "day")
+      }
+      
+      # create a list with indices for days
+      tendayintervals <- lapply(seq_along(days), function(y){
+        
+        # extract months
+        months <- strftime(days[[y]], format = "%y-%m")
+        
+        # define an additional offset value if data for several years exist there
+        offset <- (y - 1) * 36
+        
+        # get a vector with ten day-intervals
+        tdi <- do.call(c, as.vector(sapply(seq_along(table(months)), function(x){
+          
+          # get indices of ten day-intervals
+          if(which(names(table(months)) == names(table(months)[x])) == 1){
+            indices <- 1:3
+          }else{
+            indices <- seq((which(names(table(months)) == names(table(months)[x]))-1) * 3 + 1, (which(names(table(months)) == names(table(months)[x]))-1) * 3 + 3)
+          }
+          
+          c(rep(indices[1], 10), rep(indices[2], 10), rep(indices[3], table(months)[x] - 20))
+          
+        }))) + offset
+        
+      })
+      
+      # assign each day to a ten day-interval
+      tendayintervals <- 
+        do.call(c, sapply(seq_along(days), function(x){
+         names(tendayintervals[[x]]) <- days[[x]]
+         return(tendayintervals[[x]])
+        }))
+      
+      # get unique ten day-intervals for each data value in track
+      timeinterval <- rep(0, length(track@data$time))
+      days <- strftime(track@data$time, format = "%Y-%m-%d")
+      iter <- 1
+      for(day_i in unique(days)){
+        timeinterval[which(days == day_i)] <- tendayintervals[which(names(tendayintervals) == day_i)]
+        iter <- iter + 1
+      }
+      
+      # adjust indices so that minimum is 1
+      timeinterval <- timeinterval - min(timeinterval)+1
+      
+      return(timeinterval)
+    
+  }
+  
+  # function in order to classify on a daily resolution
+  assignday <- function(track){
+    
+     # get unique days
+      timeinterval <- rep(0, length(track@data$time))
+      days <- strftime(track@data$time, format = "%Y-%m-%d")
+      iter <- 1
+      for(day_i in unique(days)){
+        timeinterval[which(days == day_i)] <- iter
+        iter <- iter + 1
+      }
+      
+      return(timeinterval)
+    
+  }
+  
+  # assign data values to time intervals 
+  switch(timeinterval,
+    all = {
+      timeinterval <- assignall(track)
+    },
+    year = {
+      timeinterval <- assignyear(track)
+    },
+    month = {
+      timeinterval <- assignmonth(track)
+    },
+    tendayinterval = {
+      timeinterval <- assigntendayinterval(track)
+    },
+    day = {
+      timeinterval <- assignday(track)
+    }
+  )
+ 
+}
+```
+
+
+## removeDataTrack
+
+Function in order to determine if data values of a `Track` object for specific time intervals should be classified as usable (i.e. they should not be removed in following analyses) or not, based on a user specified threshold value of the proportion of missing values within a month. Uses the function `identifyTimeIntervals` in order to classify data values according to time intervals.
+
+* Arguments:
+    + `track`: A `Track`object with a boolean column `gap` in `track@data`. Data values have to be regularly spaced (along time).
+    + `timeinterval`: One of `"year"`, `"month"`, `"tendayinterval"`, `"day"` or `"NULL"`. If `timeinterval = "year`, computations will be conducted on a yearly basis, i.e. the proportion of gaps will be evaluated for each year `track` covers. If `timeinterval = "month"`, computations will be conducted on a monhly basis, i.e. the proportion of gaps will be evaluated for each month `track` covers. If `timeinterval = "tendayinterval"`, computations will be conducted on the basis of ten-day intervals, i.e. the proportion of gaps will be evaluated for each ten-day interval `track` covers. Each month has three ten-day intervals with the last having varying lengths of 11 to 8 days (depending on the month and the occurance of leap years). If `timeinterval = "day"`, computations will be conducted on a daily basis, i.e. the proportion of gaps will be evaluated for each day `track` covers. All time intervals that are not completely covered by `track` (i.e. potentially at the start and end of `track`) are handled as if they would represent the whole specified time interval. If `timeintervall = "all"`, computations will be conducted for the whole study period, i.e. the proportion of gaps will be evaluated for the total range the `Track` object covers.  Default is `timeinterval = "month"`. 
+    + `threshold`: A numerical value representing the maximum proportion of data values within `timeinterval` that is allowed to represent gaps (`track@data$gap == T`) in order to *not* discard all data values for the corresponding month [%]. Default is `threshold = 40`.
+   
+* Value: 
+    + A `Track` object identical with `track`, except for a new column `track@data$remove` indicating if a data value should be included in following analyses (`track@data$remove == F`) or not (`track@data$remove == T`), based on the specifications of the user, a new column `track@data$id_timeinterval` representing the id of the respective time interval specified by `timeinterval` and a new column `track@data$proportion_gaps` representing the temporal proportion of missing values within a time interval specified by `track@data$id_timeinterval`.
+
+```{r removeDataTrack, eval = T, message = F, warning = F}
+removeDataTrack <- function(track, timeinterval = "month", threshold = 40){
+
+  # assign data values to time intervals 
+  timeinterval <- identifyTimeIntervals(track, timeinterval)
+  track@data$id_timeinterval <- timeinterval
+  
+  # classify data values as removed or not
+  removed <- rep(F, nrow(track@data))
+  prop_gaps_ges <- NULL
+  for(timeinterval_i in unique(timeinterval)){
+    
+    # get the proportion of gaps
+    prop_gaps <- length(which(track@data$gap[which(timeinterval == timeinterval_i)] == T))/length(track@data$gap[which(timeinterval == timeinterval_i)]) * 100
+    prop_gaps_ges <- c(prop_gaps_ges, rep(prop_gaps, length(which(timeinterval == timeinterval_i))))
+    
+    # classify data values as removed or not
+    if(prop_gaps > threshold){
+      removed[which(timeinterval == timeinterval_i)] <- T
+    }
+    
+  }
+  
+  # add removed to track@data
+  track@data$remove <- removed
+  
+  # add proportion_gaps to track@data
+  track@data$proportion_gaps <- prop_gaps_ges
+  
+  # return result
+  return(track)
+  
+}
+```
+
+## removeDataTracks
+
+Function in order to determine if data values of each `Track` object of a specified `Tracks` object for specific time intervals should be classified as usable (i.e. they should not be removed in following analyses) or not, based on a user specified threshold value of the proportion of missing values within a month. Uses the function `identifyTimeIntervals` in order to classify data values according to time intervals.
+
+* Arguments:
+    + `tracks`: A `Tracks`object with `Track` objects with a boolean column `gap` in `track@data`. Data values have to be regularly spaced (along time).
+    + `timeinterval`: One of `"year"`, `"month"`, `"tendayinterval"`, `"day"` or `"NULL"`. If `timeinterval = "year`, computations will be conducted on a yearly basis, i.e. the proportion of gaps will be evaluated for each year `track` covers. If `timeinterval = "month"`, computations will be conducted on a monhly basis, i.e. the proportion of gaps will be evaluated for each month `track` covers. If `timeinterval = "tendayinterval"`, computations will be conducted on the basis of ten-day intervals, i.e. the proportion of gaps will be evaluated for each ten-day interval `track` covers. Each month has three ten-day intervals with the last having varying lengths of 11 to 8 days (depending on the month and the occurance of leap years). If `timeinterval = "day"`, computations will be conducted on a daily basis, i.e. the proportion of gaps will be evaluated for each day `track` covers. All time intervals that are not completely covered by `track` (i.e. potentially at the start and end of `track`) are handled as if they would represent the whole specified time interval. If `timeintervall = "all"`, computations will be conducted for the whole study period, i.e. the proportion of gaps will be evaluated for the total range the `Track` object covers.  Default is `timeinterval = "month"`. 
+    + `threshold`: A numerical value representing the maximum proportion of data values within `timeinterval` that is allowed to represent gaps (`track@data$gap == T`) in order to *not* discard all data values for the corresponding month [%]. Default is `threshold = 40`.
+    + `cores`: The number of cores to use in parallel computation. Default is `cores = 1`.
+    + `clcall`: Additional arguments exported to `clusterCall` (e.g. in order to supply alternative paths to look packages for). Default is `clcall = NULL`. 
+   
+* Value: 
+    + A `Tracks` object with `Track` objects identical with the input `Track` objects, except for a new column `track@data$remove` indicating if a data value should be included in following analyses (`track@data$remove == F`) or not (`track@data$remove == T`), based on the specifications of the user, a new column `track@data$id_timeinterval` representing the id of the respective time interval specified by `timeinterval` and a new column `track@data$proportion_gaps` representing the temporal proportion of missing values within a time interval specified by `track@data$id_timeinterval`.
+
+```{r removeDataTracks, eval = T, message = F, warning = F}
+removeDataTracks <- function(tracks, timeinterval = "month", threshold = 40, cores = 1, clcall = NULL){
+
+  # set up cluster
+  cl <- makeCluster(cores, outfile="", type = "PSOCK")
+  registerDoParallel(cl)
+  if(is.null(clcall) == F){
+    clusterCall(cl, clcall)
+  }
+  clusterCall(cl, function(){library("raster")})
+  clusterCall(cl, function(){library("spacetime")})
+  clusterCall(cl, function(){library("trajectories")})
+  clusterExport(cl = cl, varlist = list("tracks", "timeinterval", "threshold", "removeDataTrack", "identifyTimeIntervals"), envir=environment())
+  
+  new.tracks <- parLapply(cl, tracks@tracks, fun = function(x){
+    
+    new.tracks1 <- removeDataTrack(track = x, timeinterval = timeinterval, threshold = threshold)
+    
+    return(new.tracks1)
+                                }
+    )
+  
+  # convert to Tracks object
+  new.tracks <- Tracks(new.tracks)
+  
+  # stop cluster
+  stopCluster(cl)
+  
+  # return result
+  return(new.tracks)
+  
+}
+```
+
+## gapDurationTrack
+
+Function in order to compute the temporal duration of not missing values for time intervals of a `Track` object as returned by `removeDataTrack`, based on the classification of missing values as gaps by `reorganizeTracks` and on the classification of time intervals to consider during analyses by `removeDataTrack`.  
+
+* Arguments:
+    + `track`: A `Track`object with a boolean column `gap` in `track@data` and an integer valued column `id_timeinterval`. Data values have to be regularly spaced (along time).
+    + `timeinterval`: A numerical value reperesenting the duration of a time interval represented by one data value of `track` [s].
+   
+* Value: 
+    + A `Track` object identical with `track`, except for a new column `track@data$duration_nogap` representing the temporal duration of of not missing values within the corresponding time interval specified by `track@data$id_timeinterval`.  
+
+```{r gapDurationTrack, eval = T, message = F, warning = F}
+gapDurationTrack <- function(track, timeinterval = 30 * 60){
+
+  # get duration of no gaps for each time interval defined by id_timeinterval 
+  duration_intervals <- table(track@data$id_timeinterval[which(track@data$gap == FALSE)]) * timeinterval
+  
+  # assign each value to the respective data values
+  track@data$duration_nogap <- sapply(track@data$id_timeinterval, function(x){
+    duration_intervals[which(names(duration_intervals) == x)]
+  })
+  
+  # return result
+  return(track)
+  
+}
+```
+
+## gapDurationTracks
+
+Function in order to compute the temporal duration of not missing values for time intervals of the `Track` objects of a `Track` object as returned by `removeDataTracks`, based on the classification of missing values as gaps by `reorganizeTracks` and on the classification of time intervals to consider during analyses by `removeDataTracks`.  
+
+* Arguments:
+    + `tracks`: A `Tracks`object with `Track` objects with a boolean column `gap` in `track@data` and an integer valued column `id_timeinterval`. Data values have to be regularly spaced (along time).
+    + `timeinterval`: A numerical value reperesenting the duration of a time interval represented by one data value of `track` [s].
+    + `cores`: The number of cores to use in parallel computation. Default is `cores = 1`.
+    + `clcall`: Additional arguments exported to `clusterCall` (e.g. in order to supply alternative paths to look packages for). Default is `clcall = NULL`. 
+   
+* Value: 
+    + A `Tracks` object identical with `tracks`, except that each `Track` object has a new column `track@data$duration_nogap` representing the temporal duration of of not missing values within the corresponding time interval specified by `track@data$id_timeinterval`.  
+
+```{r gapDurationTracks, eval = T, message = F, warning = F}
+gapDurationTracks <- function(tracks, timeinterval = 30 * 60, cores = 1, clcall = NULL){
+
+ # set up cluster
+  cl <- makeCluster(cores, outfile="", type = "PSOCK")
+  registerDoParallel(cl)
+  if(is.null(clcall) == F){
+    clusterCall(cl, clcall)
+  }
+  clusterCall(cl, function(){library("raster")})
+  clusterCall(cl, function(){library("spacetime")})
+  clusterCall(cl, function(){library("trajectories")})
+  clusterExport(cl = cl, varlist = list("tracks", "timeinterval", "gapDurationTrack"), envir=environment())
+  
+  new.tracks <- parLapply(cl, tracks@tracks, fun = function(x){
+    
+    new.tracks1 <- gapDurationTrack(track = x, timeinterval = timeinterval)
+    
+    return(new.tracks1)
+                                }
+    )
+  
+  # convert to Tracks object
+  new.tracks <- Tracks(new.tracks)
+  
+  # stop cluster
+  stopCluster(cl)
+  
+  # return result
+  return(new.tracks)
+  
+}
+```
+
+## extractCoordinatesLocationsTrack
+
+Function in order to extract the mean coordinates for locations in a `Track` object as longitude latitude values. 
+
+* Arguments:
+    + `track`: A `Track` object with a variable `track@data$location`.
+
+* Value: 
+    + A `data.frame` object with the same number of rows as `track@data` and three columns:
+        1. `lon`: A numerical vector with the mean longitude values for each location specified by `track@data$location`.
+        2. `lat`: A numerical vector with the mean latitude values for each location specified by `track@data$location`.
+        3. `alt`: A numerical vector with the mean altitude values for each location specified by `track@data$location`.
+
+```{r extractCoordinatesLocationsTrack, eval = T, message = F, warning = F}
+extractCoordinatesLocationsTrack <- function(track){
+  
+  
+  
+  
+  
+  # return result
+  return(meanlocations)
+  
+}
+```
+
+## summaryIndicatorsTrack1
+
+Function in order to compute various summary indicators for the movement of herders, solely based on a `Track` object. The function assumes a `Track` object that was reorgnaized with `reorganizeTrack`, and in which time intervals to include in the analyses were identified using `removeDataTrack`. Values are computed for each individual time interval as specified by `track@data$id_timeinterval`.  
+
+* Arguments:
+    + `track`: A `Track`object with a logical column `track@data$remove`, `track@data$id_timeinterval` and `track@data$nogap_duration`.
+    + `normalize`: A logical value indicating if the computed summary indicators should be normalized relative to the duration of data values (as specified by `track@data$nogap_duration`) for each time interval (as specified by `track@data$id_timeinterval`) (`normalize = TRUE`) or not (`normalize = FALSE`).
+    + `timeinterval`: A numerical value reperesenting the duration of a time interval represented by one data value of `track` [s].
+
+* Value: 
+    + A `data.frame` object with each row representing a time interval as specified by `track@data$id_timeinterval` containing the following variables:
+        1. `distance_tot`: A numeric value representing the (normalized) total distance covered during a time interval [m].
+        2. `altitude_tot`: A numeric value representing the (normalized) total altitudinal distance covered (i.e. each metre covered in a vertical distance) during a time interval [m].
+        3. `altitude_dist`: A numeric value representing the (normalized) total altitudinal distance covered during a time interval [m] (i.e. the altitudinal difference between the first point in the time interval and the last point).
+        3. `campsites_time`: A numeric value representing the (normlaized) total time spend within campsites during a time interval [s].
+        4. `nocampsites_time`: A numeric value representing the (normlaized) total time spend not in campsites during a time interval [s].
+        5. `number_campsites`: A numeric value representing the (normlaized) total number of unique campsites (i.e. neglecting repeated visits or counting locations respectively) during a time interval. 
+        6. `number_repeated_visits`: A numeric value representing the total number of repeated visits for all unique campsites diring a time interval.
+
+```{r summaryIndicatorsTrack1, eval = T, message = F, warning = F}
+summaryIndicatorsTrack1 <- function(track, normalize = T, timeinterval = 30*60){
+  
+  # create a data frame with information on the position of the data values for each time interval
+  index1 <- NULL
+  for(timeinterval_i in unique(track@data$id_timeinterval)){
+    
+    # get indices in track@data corresponding to time interval_i
+    index1 <- rbind(index1, range(which(track@data$id_timeinterval == timeinterval_i)))
+    
+  }
+  summaryindicators <- data.frame(id_timeinterval = unique(track@data$id_timeinterval), index1 = index1[,1], index2 = index1[,2])
+  
+  # extract summary indicators
+  summaryindicators <- apply(summaryindicators, 1, function(x){
+    
+    if(track@data$remove[x[1]] == TRUE){
+      c(x[1:3],NA, NA, NA, NA, NA)
+    }else{
+      
+      # get the total distance covered
+    distance_tot <- sum(track@connections$distance[x[2]:(x[3] - 1)][-which(track@data$gap[(x[2]+ 1):x[3]] == FALSE | track@data$gap[x[2]:(x[3]-1)] == FALSE)])
+    
+    # get the total elevation covered
+    altitude_tot <- sum(abs((track@data$HEIGHT[x[2]:(x[3]-1)] - track@data$HEIGHT[(x[2]+1):x[3]])[-which(track@data$gap[(x[2]+ 1):x[3]] == FALSE | track@data$gap[x[2]:(x[3]-1)] == FALSE)]))
+    
+    # get the altitudinal distance covered
+    altitude_dist <- sum((track@data$HEIGHT[x[2]:(x[3]-1)] - track@data$HEIGHT[(x[2]+1):x[3]])[-which(track@data$gap[(x[2]+ 1):x[3]] == FALSE | track@data$gap[x[2]:(x[3]-1)] == FALSE)])
+    
+    # get the time spend within campsites
+    campsites_time <- length(which(track@data$gap[x[2]:x[3]] == FALSE & track@data$campsite[x[2]:x[3]] == TRUE)) * timeinterval
+    
+    # get the time spend outside campsites
+    nocampsites_time <- length(which(track@data$gap[x[2]:x[3]] == FALSE & track@data$campsite[x[2]:x[3]] == FALSE)) * timeinterval
+      
+    # collect the values in a  vector
+    summaryindicators1 <- c(x[1:3], distance_tot, altitude_tot, altitude_dist, campsite_time, nocampsite_time)
+    
+    # normalize values
+    if(normalize == TRUE){
+      summaryindicators1[4:length(summaryindicators1)] <- summaryindicators1[4:length(summaryindicators1)]/track@data$duration_nogap[x[2]]
+    }
+    
+    # return result
+    return(summaryindicators1)
+    
+    }
+    
+  })
+  
+  # define column names of summaryindicators
+  names(summaryindicators) <- c("id_timeinterval", "index1", "index2", "distance_tot", "altitude_tot", "altitude_dist", "campsite_time", "nocampsite_time")
+  
+  # return result
+  return(summaryindicators)
+  
+}
+```
+
+## summaryIndicatorsTracks1
+
+Function in order to compute various summary indicators for the movement of herders, solely based on a `Tracks` object. The function assumes a `Tracks` object that was reorgnaized with `reorganizeTracks`, and in which time intervals to include in the analyses were identified using `removeDataTracks`. Values are computed for each individual `Track` object and each individual time interval as specified by `track@data$id_timeinterval`.  
+
+* Arguments:
+    + `tracks`: A `Tracks`object with `Track` objects with a logical column `track@data$remove`, `track@data$id_timeinterval` and `track@data$nogap_duration`.
+    + `normalize`: A logical value indicating if the computed summary indicators should be normalized relative to the duration of data values (as specified by `track@data$nogap_duration`) for each time interval (as specified by `track@data$id_timeinterval`) (`normalize = TRUE`) or not (`normalize = FALSE`).
+    + `cores`: The number of cores to use in parallel computation. Default is `cores = 1`.
+    + `clcall`: Additional arguments exported to `clusterCall` (e.g. in order to supply alternative paths to look packages for). Default is `clcall = NULL`.
+
+* Value: 
+    + A `list` with `data.frame` objects for each `Track` object in `Tracks` with each row representing a time interval as specified by `track@data$id_timeinterval` containing the following variables:
+         1. `distance_tot`: A numeric value representing the (normalized) total distance covered during a time interval [m].
+        2. `altitude_tot`: A numeric value representing the (normalized) total altitudinal distance covered (i.e. each metre covered in a vertical distance) during a time interval [m].
+        3. `altitude_dist`: A numeric value representing the (normalized) total altitudinal distance covered during a time interval [m] (i.e. the altitudinal difference between the first point in the time interval and the last point).
+        3. `campsites_time`: A numeric value representing the (normlaized) total time spend within campsites during a time interval [s].
+        4. `nocampsites_time`: A numeric value representing the (normlaized) total time spend not in campsites during a time interval [s].
+        5. `number_campsites`: A numeric value representing the (normlaized) total number of unique campsites (i.e. neglecting repeated visits or counting locations respectively) during a time interval. 
+        6. `number_repeated_visits`: A numeric value representing the total number of repeated visits for all unique campsites diring a time interval.
+
+```{r summaryIndicatorsTracks1, eval = T, message = F, warning = F}
+summaryIndicatorsTracks1 <- function(tracks, normalize = T, timeinterval = 30*60, cores, clcall){
+  
+  # set up cluster
+  cl <- makeCluster(cores, outfile="", type = "PSOCK")
+  registerDoParallel(cl)
+  if(is.null(clcall) == F){
+    clusterCall(cl, clcall)
+  }
+  clusterCall(cl, function(){library("raster")})
+  clusterCall(cl, function(){library("spacetime")})
+  clusterCall(cl, function(){library("trajectories")})
+  clusterExport(cl = cl, varlist = list("tracks", "noralize", "timeinterval", "summaryIndicatorsTrack1"), envir=environment())
+  
+  summaryindicators <- parLapply(cl, tracks@tracks, fun = function(x){
+    
+    summaryindicators1 <- summaryIndicatorsTrack1(track = x, normalize = normalize, timeinterval = timeinterval)
+    
+    return(summaryindicators1)
+                                }
+    )
+  
+  # stop cluster
+  stopCluster(cl)
+  
+  # return result
+  return(summaryindicators)
+  
+}
+```
